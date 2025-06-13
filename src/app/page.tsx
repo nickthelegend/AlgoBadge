@@ -3,7 +3,7 @@
 import type React from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { ArrowRightIcon, TagIcon, UsersIcon, ZapIcon } from "lucide-react"
+import { ArrowRightIcon, UsersIcon, ZapIcon, AwardIcon } from "lucide-react" // Changed TagIcon to AwardIcon
 import { useWallet } from "@txnlab/use-wallet-react"
 import { ConnectWalletButton } from "@/components/connect-wallet-button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,7 +13,7 @@ export default function Home() {
 
   return (
     <>
-      {/* Hero Section - This content will appear behind the sticky header */}
+      {/* Hero Section */}
       <section className="relative py-20 md:py-32 lg:py-40 bg-gradient-to-br from-background via-background to-primary/5 dark:to-primary/10">
         <div
           aria-hidden="true"
@@ -36,8 +36,6 @@ export default function Home() {
             ) : (
               <Button size="lg" asChild>
                 <Link href="/dashboard">
-                  {" "}
-                  {/* Assuming a dashboard page */}
                   Go to Dashboard <ArrowRightIcon className="ml-2 h-5 w-5" />
                 </Link>
               </Button>
@@ -60,9 +58,9 @@ export default function Home() {
           </div>
           <div className="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-3">
             <FeatureCard
-              icon={<TagIcon className="h-7 w-7 text-primary" />}
-              title="Advanced Tagging"
-              description="Organize credentials with a flexible and powerful tagging system for easy discovery."
+              icon={<AwardIcon className="h-7 w-7 text-primary" />} // Changed from TagIcon
+              title="Manage Badges" // Changed from "Advanced Tagging"
+              description="Organize and categorize your achievements with a flexible badge system." // Changed description
             />
             <FeatureCard
               icon={<ZapIcon className="h-7 w-7 text-primary" />}
@@ -92,7 +90,8 @@ export default function Home() {
                   <Link href="/badges/my-badges">View My Badges</Link>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <Link href="/badges/create">Create New Badge</Link>
+                  {/* This now points to the page that was formerly for creating tags */}
+                  <Link href="/badges/new">Create New Badge</Link>
                 </Button>
               </CardContent>
             </Card>

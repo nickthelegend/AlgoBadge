@@ -280,13 +280,13 @@ export default function BadgeDetailPage() {
             .getMethodByName(
               [
                 new algosdk.ABIMethod({
-                  name: "registerEvent",
+                  name: "registerBadge",
                   desc: "",
                   args: [{ type: "string", name: "email", desc: "" }],
                   returns: { type: "void", desc: "" },
                 }),
               ],
-              "registerEvent",
+              "registerBadge",
             )
             .getSelector(),
           new algosdk.ABIStringType().encode(applicationDescription.trim()),

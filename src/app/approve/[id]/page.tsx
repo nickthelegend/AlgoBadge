@@ -469,7 +469,7 @@ export default function ApproveDetailPage() {
       .addPayment({
         sender: activeAddress,
         receiver: app_address,
-        amount: AlgoAmount.MicroAlgos(300_000),
+        amount: AlgoAmount.MicroAlgos(100_000),
         signer: transactionSigner,
       })
       .send({ populateAppCallResources: true })

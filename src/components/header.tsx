@@ -4,14 +4,15 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { ThemeToggle } from "./theme-toggle"
 import { ConnectWalletButton } from "./connect-wallet-button"
-import { HomeIcon, UsersIcon, WalletIcon, AwardIcon, BrainIcon, ShieldCheckIcon } from "lucide-react"
+import { HomeIcon, UsersIcon, WalletIcon, AwardIcon, BrainIcon, ShieldCheckIcon, CheckCircleIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navLinksBase = [
   { href: "/", label: "Home", icon: <HomeIcon className="h-5 w-5" /> },
   { href: "/badges", label: "Badges", icon: <AwardIcon className="h-5 w-5" /> },
   { href: "/quiz", label: "Quiz", icon: <BrainIcon className="h-5 w-5" /> },
-  { href: "/verify", label: "Verify Badge", icon: <ShieldCheckIcon className="h-5 w-5" /> },
+  { href: "/verify", label: "Apply Badge", icon: <ShieldCheckIcon className="h-5 w-5" /> },
+  { href: "/approve", label: "Approve", icon: <CheckCircleIcon className="h-5 w-5" /> },
   { href: "/users", label: "Users", icon: <UsersIcon className="h-5 w-5" /> },
 ]
 

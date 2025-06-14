@@ -94,14 +94,61 @@ export default function BadgeDetailPage() {
         const appInfo = await indexerClient.lookupApplications(Number(badgeAppId)).do()
         if (appInfo.application && appInfo.application.params && appInfo.application.params["global-state"]) {
           const globalState = appInfo.application.params["global-state"]
+          console.log("Global state for badge contract:", globalState) // Debug log
+
           const assetIdEntry = globalState.find((entry: any) => {
-            const keyStr = Buffer.from(entry.key, "base64").toString()
+            // Decode the key properly
+            let keyStr: string
+            if (typeof entry.key === "string") {
+              // entry.key is base64-encoded string
+              keyStr = Buffer.from(entry.key, "base64").toString()
+            } else {
+              // entry.key is Uint8Array
+              keyStr = Buffer.from(entry.key).toString()
+            }
+            console.log("Checking global state key:", keyStr) // Debug log
             return keyStr === "assetID"
           })
-          if (assetIdEntry && assetIdEntry.value.uint) {
-            fetchedAssetId = Number(assetIdEntry.value.uint)
+
+          if (assetIdEntry) {
+            console.log("Found assetID entry:", assetIdEntry) // Debug log
+            if (assetIdEntry.value && assetIdEntry.value.uint !== undefined) {
+              fetchedAssetId = Number(assetIdEntry.value.uint)
+              console.log("Decoded Asset ID:", fetchedAssetId)
+            } else if (assetIdEntry.value && assetIdEntry.value.bytes) {
+              // Sometimes asset ID might be stored as bytes, try to decode
+              const assetIdBytes =
+                typeof assetIdEntry.value.bytes === "string"
+                  ? Buffer.from(assetIdEntry.value.bytes, "base64")
+                  : Buffer.from(assetIdEntry.value.bytes)
+
+              if (assetIdBytes.length === 8) {
+                // Try to decode as uint64
+                try {
+                  const assetIdBigInt = algosdk.decodeUint64(assetIdBytes, "safe")
+                  fetchedAssetId = Number(assetIdBigInt)
+                  console.log("Decoded Asset ID from bytes:", fetchedAssetId)
+                } catch (decodeError) {
+                  localErrors.push(`Could not decode asset ID from bytes: ${decodeError}`)
+                }
+              } else {
+                localErrors.push(`Asset ID bytes length unexpected: ${assetIdBytes.length}`)
+              }
+            } else {
+              localErrors.push("assetID entry found but value format is unexpected.")
+            }
           } else {
-            localErrors.push("assetID not found in global state of badge contract.")
+            localErrors.push("assetID key not found in global state of badge contract.")
+            console.log(
+              "Available global state keys:",
+              globalState.map((entry: any) => {
+                const keyStr =
+                  typeof entry.key === "string"
+                    ? Buffer.from(entry.key, "base64").toString()
+                    : Buffer.from(entry.key).toString()
+                return keyStr
+              }),
+            )
           }
         } else {
           localErrors.push("Could not retrieve global state for badge contract.")

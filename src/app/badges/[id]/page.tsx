@@ -24,6 +24,7 @@ import {
   FileText,
 } from "lucide-react"
 import { toast } from "react-toastify"
+import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -262,18 +263,18 @@ export default function BadgeDetailPage() {
             .getMethodByName(
               [
                 new algosdk.ABIMethod({
-                  name: "registerEvent",
+                  name: "registerBadge",
                   desc: "",
                   args: [{ type: "string", name: "email", desc: "" }],
                   returns: { type: "void", desc: "" },
                 }),
               ],
-              "registerEvent",
+              "registerBadge",
             )
             .getSelector(),
           new algosdk.ABIStringType().encode(applicationDescription.trim()),
         ],
-        suggestedParams: { ...suggestedParams },
+        suggestedParams: { ...suggestedParams,fee:30000 },
         boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
         foreignAssets: [badgeDetails.assetId],
       })
@@ -285,6 +286,7 @@ export default function BadgeDetailPage() {
         assetIndex: badgeDetails.assetId,
         amount: 0,
         suggestedParams,
+        
       })
 
       // Group the transactions

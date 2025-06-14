@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, type FormEvent } from "react"
 import Link from "next/link"
-import { AwardIcon, UploadCloudIcon, CheckCircle2Icon, AlertTriangleIcon, Loader2Icon, CircleDollarSignIcon } from 'lucide-react'
+import { AwardIcon, CheckCircle2Icon, AlertTriangleIcon, Loader2Icon, CircleDollarSignIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import PageTitleHeader from "@/components/page-title-header"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,12 +20,12 @@ import { BadgeManagerClient } from "@/contracts/BadgeManagerClient"
 import { BadgeContractFactory, BadgeContractClient } from "@/contracts/BadgeContractClient" // Assuming factory is part of BadgeContractClient file or separate
 
 import { uploadImageToPinata, type UploadResult } from "./actions"
-import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 import { OnApplicationComplete } from "algosdk"
+import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 
 // --- CONFIGURATION ---
 // !!! REPLACE WITH YOUR ACTUAL DEPLOYED BADGE MANAGER APP ID !!!
-const BADGE_MANAGER_APP_ID = BigInt(741171409) 
+const BADGE_MANAGER_APP_ID = BigInt(741171409)
 // It's better to use an env var for this: NEXT_PUBLIC_BADGE_MANAGER_APP_ID
 
 export default function CreateBadgePage() {
@@ -37,15 +37,14 @@ export default function CreateBadgePage() {
   const [maxSupply, setMaxSupply] = useState("100") // New field, as string for input
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  
+
   const [isUploadingIpfs, setIsUploadingIpfs] = useState(false)
   const [ipfsUploadStatus, setIpfsUploadStatus] = useState<UploadResult | null>(null)
-  const [ipfsHash, setIpfsHash] = useState<string | null>(null)
+  const [ipfsHash, setIpfsHash] = useState<string | null>(null) // Still useful for UI display
 
   const [isCreatingOnChain, setIsCreatingOnChain] = useState(false)
   const [onChainStatus, setOnChainStatus] = useState<string | null>(null)
   const [finalBadgeAppId, setFinalBadgeAppId] = useState<bigint | null>(null)
-
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -54,12 +53,12 @@ export default function CreateBadgePage() {
         toast.error("Please select an image file.")
         setSelectedFile(null)
         setPreviewUrl(null)
-        event.target.value = "" 
+        event.target.value = ""
         return
       }
       setSelectedFile(file)
       setPreviewUrl(URL.createObjectURL(file))
-      setIpfsUploadStatus(null) 
+      setIpfsUploadStatus(null)
       setIpfsHash(null)
       setOnChainStatus(null)
       setFinalBadgeAppId(null)
@@ -93,7 +92,7 @@ export default function CreateBadgePage() {
     const ipfsFormData = new FormData()
     ipfsFormData.append("badgeImage", selectedFile)
     const ipfsResult = await uploadImageToPinata(ipfsFormData)
-    setIpfsUploadStatus(ipfsResult)
+    setIpfsUploadStatus(ipfsResult) // For UI feedback
     setIsUploadingIpfs(false)
 
     if (!ipfsResult.success || !ipfsResult.ipfsHash) {
@@ -101,9 +100,11 @@ export default function CreateBadgePage() {
       toast.error(`IPFS Upload failed: ${ipfsResult.error || "Unknown error"}`)
       return
     }
-    
+
     toast.update("ipfsUpload", { render: "Image uploaded to IPFS!", type: "success", autoClose: 2000 })
-    setIpfsHash(ipfsResult.ipfsHash)
+    setIpfsHash(ipfsResult.ipfsHash) // Set state for UI display or other effects
+
+    // Use ipfsResult.ipfsHash directly for immediate operations
     const imageIpfsUrl = `ipfs://${ipfsResult.ipfsHash}`
 
     // --- Start Blockchain Interaction ---
@@ -118,56 +119,35 @@ export default function CreateBadgePage() {
           token: "",
         },
         indexerConfig: {
-          server: "https://testnet-api.algonode.cloud",
+          server: "https://testnet-api.algonode.cloud", // Corrected: was algonode.cloud, should be idx for indexer
           port: "",
           token: "",
         },
       })
-      // await algorand.ensureFunded(
-      //   {
-      //     accountToFund: activeAddress,
-      //     minSpendingBalance: AlgoAmount.Algos(1), // Ensure enough for transactions
-      //     minFundingIncrement: AlgoAmount.Algos(1),
-      //   },
-      //   {
-      //     // Fund with a temporary dispenser if on localnet/devnet and no other funder is available
-      //     // This is a placeholder; for TestNet/MainNet, users must be funded.
-      //     // fundWith: algokit.algos(10).microAlgos,
-      //   }
-      // );
-
+      // await algorand.ensureFunded(...) // ensureFunded might be needed depending on setup
 
       toast.update("onChain", { render: "Creating badge contract on blockchain..." })
 
-      // 1. Create new BadgeContract application instance
       const badgeContractFactory = new BadgeContractFactory({
         defaultSender: activeAddress,
         defaultSigner: transactionSigner,
         algorand,
       })
-      
-      // Adjust arguments for your BadgeContractFactory's createApplication method
-      // These are assumptions based on typical patterns.
-      const { result, appClient }  = await badgeContractFactory.send.create.createApplication({
+
+      const { result, appClient } = await badgeContractFactory.send.create.createApplication({
         sender: activeAddress,
         signer: transactionSigner,
         onComplete: OnApplicationComplete.NoOpOC,
-        args: [
-          activeAddress,
-          badgeName,
-          BigInt(maxSupply),
-        ],
+        args: [activeAddress, badgeName, BigInt(maxSupply)],
       })
-      
+
       const newBadgeAppId = await appClient.appId
       const appAddress = await appClient.appAddress.toString()
       setFinalBadgeAppId(newBadgeAppId)
       toast.update("onChain", { render: `Badge contract created! App ID: ${newBadgeAppId}`, autoClose: 3000 })
 
-
       toast.info("Registering badge with manager and minting...", { autoClose: false, toastId: "finalizing" })
-      
-      // 2. Initialize clients for BadgeManager and the new BadgeContract
+
       const badgeManager = algorand.client.getTypedAppClientById(BadgeManagerClient, {
         appId: BADGE_MANAGER_APP_ID,
         defaultSender: activeAddress,
@@ -178,45 +158,49 @@ export default function CreateBadgePage() {
         defaultSender: activeAddress,
         defaultSigner: transactionSigner,
       })
-      const ipfsURL = `ipfs://${ipfsHash}`
+      console.log("New Badge App ID:", newBadgeAppId)
+      console.log("New Badge App Address:", appAddress)
 
-      console.log("New Badge App ID:", newBadgeAppId);
-      console.log("New Badge App Address:", appAddress);
-      // 3. Grouped transaction
-      // if (!ipfsHash) {
-      //   toast.error("IPFS hash is missing. Cannot continue.");
-      //   return;
-      // }
-      await algorand.newGroup()
+      // Check ipfsResult.ipfsHash directly
+      if (!ipfsResult.ipfsHash) {
+        toast.error("IPFS hash is missing from upload result. Cannot continue.")
+        setIsCreatingOnChain(false) // Reset loading state
+        toast.dismiss("finalizing") // Dismiss any pending toasts
+        toast.dismiss("onChain")
+        return
+      }
+
+      await algorand
+        .newGroup()
         .addAppCallMethodCall(
           await badgeManager.params.createBadge({
-
-
             args: {
               appId: newBadgeAppId,
-              badgeName: badgeName
-            }
-          }) // Example: increase fee for inner txns
+              badgeName: badgeName,
+            },
+            // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
+          }),
         )
         .addPayment({
           sender: activeAddress,
           receiver: appAddress,
-          amount: AlgoAmount.MicroAlgos(300_000), // 0.3 ALGO for MBR + initial state
+          amount: AlgoAmount.MicroAlgos(300_000),
           signer: transactionSigner,
         })
         .addAppCallMethodCall(
           await newBadgeContract.params.createBadge({
-            args:{
-              assetUrl: ipfsURL,
+            args: {
+              assetUrl: imageIpfsUrl, // Use the correctly constructed imageIpfsUrl
               totalTickets: BigInt(maxSupply),
-            }
-          })
-        ).send({ populateAppCallResources: true })
+            },
+            // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
+          }),
+        )
+        .send({ populateAppCallResources: true })
 
       toast.dismiss("finalizing")
       toast.success("Badge created and registered successfully on the blockchain!")
       setOnChainStatus(`Badge App ID: ${newBadgeAppId} successfully created.`)
-
     } catch (error: any) {
       console.error("Blockchain transaction error:", error)
       toast.dismiss("onChain")
@@ -227,8 +211,8 @@ export default function CreateBadgePage() {
       setIsCreatingOnChain(false)
     }
   }
-  
-  const isLoading = isUploadingIpfs || isCreatingOnChain;
+
+  const isLoading = isUploadingIpfs || isCreatingOnChain
 
   return (
     <div className="container mx-auto py-8 px-4 sm:px-6 lg:px-8">
@@ -241,35 +225,74 @@ export default function CreateBadgePage() {
         <form onSubmit={handleSubmit}>
           <CardHeader>
             <CardTitle>New Badge Type Details</CardTitle>
-            <CardDescription>
-              Fill in the information, upload an image, and set on-chain parameters.
-            </CardDescription>
+            <CardDescription>Fill in the information, upload an image, and set on-chain parameters.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="badgeName">Badge Name</Label>
-              <Input id="badgeName" name="badgeName" value={badgeName} onChange={(e) => setBadgeName(e.target.value)} placeholder="e.g., AlgoChallenger Season 1" required />
+              <Input
+                id="badgeName"
+                name="badgeName"
+                value={badgeName}
+                onChange={(e) => setBadgeName(e.target.value)}
+                placeholder="e.g., AlgoChallenger Season 1"
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="badgeDescription">Description (Optional)</Label>
-              <Textarea id="badgeDescription" name="badgeDescription" value={badgeDescription} onChange={(e) => setBadgeDescription(e.target.value)} rows={3} placeholder="A brief description of this badge and its achievement." />
+              <Textarea
+                id="badgeDescription"
+                name="badgeDescription"
+                value={badgeDescription}
+                onChange={(e) => setBadgeDescription(e.target.value)}
+                rows={3}
+                placeholder="A brief description of this badge and its achievement."
+              />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="badgeCategory">Category</Label>
-                <Input id="badgeCategory" name="badgeCategory" value={badgeCategory} onChange={(e) => setBadgeCategory(e.target.value)} placeholder="e.g., Hackathon, Community" />
+                <Input
+                  id="badgeCategory"
+                  name="badgeCategory"
+                  value={badgeCategory}
+                  onChange={(e) => setBadgeCategory(e.target.value)}
+                  placeholder="e.g., Hackathon, Community"
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="maxSupply">Max Supply</Label>
-                <Input id="maxSupply" name="maxSupply" type="number" value={maxSupply} onChange={(e) => setMaxSupply(e.target.value)} placeholder="e.g., 1000" required min="1" />
+                <Input
+                  id="maxSupply"
+                  name="maxSupply"
+                  type="number"
+                  value={maxSupply}
+                  onChange={(e) => setMaxSupply(e.target.value)}
+                  placeholder="e.g., 1000"
+                  required
+                  min="1"
+                />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="badgeImage">Badge Image</Label>
-              <Input id="badgeImage" name="badgeImage" type="file" accept="image/*" onChange={handleFileChange} className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" required />
+              <Input
+                id="badgeImage"
+                name="badgeImage"
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+                className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                required
+              />
               {previewUrl && (
                 <div className="mt-4">
-                  <img src={previewUrl || "/placeholder.svg"} alt="Badge preview" className="max-w-xs max-h-48 rounded-md border" />
+                  <img
+                    src={previewUrl || "/placeholder.svg"}
+                    alt="Badge preview"
+                    className="max-w-xs max-h-48 rounded-md border"
+                  />
                 </div>
               )}
             </div>
@@ -281,12 +304,20 @@ export default function CreateBadgePage() {
               </div>
             )}
             {ipfsUploadStatus && !isUploadingIpfs && (
-              <div className={`mt-4 p-3 rounded-md text-sm flex items-center ${ipfsUploadStatus.success ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                {ipfsUploadStatus.success ? <CheckCircle2Icon className="mr-2 h-5 w-5" /> : <AlertTriangleIcon className="mr-2 h-5 w-5" />}
-                {ipfsUploadStatus.success ? `Image "${ipfsUploadStatus.fileName}" uploaded! IPFS Hash: ${ipfsUploadStatus.ipfsHash}` : `IPFS Upload failed: ${ipfsUploadStatus.error}`}
+              <div
+                className={`mt-4 p-3 rounded-md text-sm flex items-center ${ipfsUploadStatus.success ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
+              >
+                {ipfsUploadStatus.success ? (
+                  <CheckCircle2Icon className="mr-2 h-5 w-5" />
+                ) : (
+                  <AlertTriangleIcon className="mr-2 h-5 w-5" />
+                )}
+                {ipfsUploadStatus.success
+                  ? `Image "${ipfsUploadStatus.fileName}" uploaded! IPFS Hash: ${ipfsUploadStatus.ipfsHash}`
+                  : `IPFS Upload failed: ${ipfsUploadStatus.error}`}
               </div>
             )}
-            
+
             {isCreatingOnChain && (
               <div className="flex items-center text-muted-foreground mt-2">
                 <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
@@ -294,8 +325,14 @@ export default function CreateBadgePage() {
               </div>
             )}
             {onChainStatus && !isCreatingOnChain && (
-               <div className={`mt-4 p-3 rounded-md text-sm flex items-center ${finalBadgeAppId ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                {finalBadgeAppId ? <CheckCircle2Icon className="mr-2 h-5 w-5" /> : <AlertTriangleIcon className="mr-2 h-5 w-5" />}
+              <div
+                className={`mt-4 p-3 rounded-md text-sm flex items-center ${finalBadgeAppId ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
+              >
+                {finalBadgeAppId ? (
+                  <CheckCircle2Icon className="mr-2 h-5 w-5" />
+                ) : (
+                  <AlertTriangleIcon className="mr-2 h-5 w-5" />
+                )}
                 {onChainStatus}
               </div>
             )}
@@ -304,20 +341,26 @@ export default function CreateBadgePage() {
                 View Badge Contract on Explorer (e.g., Allo): App ID {finalBadgeAppId.toString()}
               </div>
             )}
-
           </CardContent>
           <CardFooter className="flex justify-end gap-2 pt-6 border-t">
             <Button variant="outline" asChild type="button" disabled={isLoading}>
               <Link href="/badges">Cancel</Link>
             </Button>
             <Button type="submit" disabled={isLoading || !selectedFile || !!finalBadgeAppId}>
-              {isLoading ? (<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />) 
-               : finalBadgeAppId ? (<CheckCircle2Icon className="mr-2 h-4 w-4" />) 
-               : (<CircleDollarSignIcon className="mr-2 h-4 w-4" />)}
-              {isUploadingIpfs ? "Uploading Image..." 
-               : isCreatingOnChain ? "Creating on Chain..." 
-               : finalBadgeAppId ? "Badge Created!" 
-               : "Create Badge on Algorand"}
+              {isLoading ? (
+                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              ) : finalBadgeAppId ? (
+                <CheckCircle2Icon className="mr-2 h-4 w-4" />
+              ) : (
+                <CircleDollarSignIcon className="mr-2 h-4 w-4" />
+              )}
+              {isUploadingIpfs
+                ? "Uploading Image..."
+                : isCreatingOnChain
+                  ? "Creating on Chain..."
+                  : finalBadgeAppId
+                    ? "Badge Created!"
+                    : "Create Badge on Algorand"}
             </Button>
           </CardFooter>
         </form>

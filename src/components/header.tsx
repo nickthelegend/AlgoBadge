@@ -6,6 +6,7 @@ import { ThemeToggle } from "./theme-toggle"
 import { ConnectWalletButton } from "./connect-wallet-button"
 import { HomeIcon, UsersIcon, WalletIcon, AwardIcon, BrainIcon, ShieldCheckIcon, CheckCircleIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
+import Image from 'next/image'
 
 const navLinksBase = [
   { href: "/", label: "Home", icon: <HomeIcon className="h-5 w-5" /> },
@@ -31,10 +32,11 @@ export default function Header() {
       )}
     >
       <div className="container flex h-16 items-center px-4 sm:px-6 lg:px-8">
-        <Link href="/" className="mr-6 flex items-center space-x-2.5">
-          <WalletIcon className="h-6 w-6 sm:h-7 sm:w-7 text-primary" />
-          <span className="font-semibold text-lg sm:text-xl">AlgoBadges</span>
-        </Link>
+      <Link href="/" className="mr-6 flex items-center">
+  {/* <WalletIcon className="h-6 w-6 sm:h-7 sm:w-7 text-primary" /> */}
+  <Image src="/logo.png" alt="Logo" width={64} height={64} className="mr-[-15]" />
+  <span className="text-[32px] font-bold text-white mb-1" >BADGES</span>
+  </Link> 
         <nav className="flex flex-1 items-center justify-center gap-1 sm:gap-2 md:gap-4">
           {navLinks.map((link) => (
             <Link

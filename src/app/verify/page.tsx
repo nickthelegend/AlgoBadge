@@ -124,7 +124,7 @@ export default function VerifyPage() {
                 <SelectTrigger id="badge-select">
                   <SelectValue placeholder="Select a badge" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[60]">
                   {AVAILABLE_BADGES.map((badge) => (
                     <SelectItem key={badge.id} value={badge.id}>
                       {badge.name}

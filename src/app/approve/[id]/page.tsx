@@ -154,8 +154,8 @@ export default function ApproveDetailPage() {
         }
 
         try {
-          const [decodedName] = abiTypeString.decode(managerValueBytes) as [string]
-          fetchedBadgeName = decodedName
+          const [status,desc,sigID] = abiTypeString.decode(managerValueBytes) as [boolean,string,BigInt]
+          fetchedBadgeName = desc
         } catch (abiError: any) {
           if (abiError.message && abiError.message.includes("string length bytes do not match")) {
             fetchedBadgeName = Buffer.from(managerValueBytes).toString("utf-8")

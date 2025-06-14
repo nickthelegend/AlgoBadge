@@ -25,7 +25,7 @@ import { OnApplicationComplete } from "algosdk"
 
 // --- CONFIGURATION ---
 // !!! REPLACE WITH YOUR ACTUAL DEPLOYED BADGE MANAGER APP ID !!!
-const BADGE_MANAGER_APP_ID = BigInt(process.env.NEXT_PUBLIC_BADGE_MANAGER_APP_ID || "741171409") 
+const BADGE_MANAGER_APP_ID = BigInt(741171409) 
 // It's better to use an env var for this: NEXT_PUBLIC_BADGE_MANAGER_APP_ID
 
 export default function CreateBadgePage() {
@@ -180,7 +180,6 @@ export default function CreateBadgePage() {
       })
 
       // 3. Grouped transaction
-      const parsedMaxSupply = BigInt(maxSupply)
       if(!ipfsHash){
         return
       }
@@ -209,7 +208,7 @@ export default function CreateBadgePage() {
             }
           })
         )
-        .execute({populateAppCallResources: true}) // populateAppCallResources is crucial for complex calls
+        .send({ populateAppCallResources: true })
 
       toast.dismiss("finalizing")
       toast.success("Badge created and registered successfully on the blockchain!")

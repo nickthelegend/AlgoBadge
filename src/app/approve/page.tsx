@@ -4,21 +4,21 @@ import { useState, useEffect, useCallback } from "react"
 import { useWallet } from "@txnlab/use-wallet-react"
 import * as algosdk from "algosdk"
 import { Buffer } from "buffer"
+import Link from "next/link"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import PageTitleHeader from "@/components/page-title-header"
 import {
   CheckCircleIcon,
   XCircleIcon,
-  ClockIcon,
-  UserCheckIcon,
   ShieldIcon,
   Loader2,
   AlertTriangle,
   FileTextIcon,
   UsersIcon,
+  EyeIcon,
+  ExternalLinkIcon,
 } from "lucide-react"
 
 // Configuration
@@ -40,24 +40,13 @@ const MENTOR_ADDRESSES = [
 interface BadgeInfo {
   id: string // Badge App ID
   name: string
-  pendingApplications: number
   totalUsers: number
-}
-
-interface PendingApplication {
-  id: string
-  badgeId: string
-  badgeName: string
-  applicantAddress: string
-  description: string // From the box value
-  submittedAt?: string
-  status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
+  rawBoxName: string
 }
 
 export default function ApprovePage() {
   const { activeAccount, activeAddress } = useWallet()
   const [badges, setBadges] = useState<BadgeInfo[]>([])
-  const [applications, setApplications] = useState<PendingApplication[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [userRole, setUserRole] = useState<"admin" | "mentor" | "unauthorized" | null>(null)
@@ -95,24 +84,24 @@ export default function ApprovePage() {
       if (!boxesResponse.boxes || boxesResponse.boxes.length === 0) {
         setError("No badges found in the Badge Manager contract.")
         setBadges([])
-        setApplications([])
         setIsLoading(false)
         return
       }
 
       const fetchedBadges: BadgeInfo[] = []
-      const allApplications: PendingApplication[] = []
 
       // 2. Process each badge
       for (const box of boxesResponse.boxes) {
         if (!box.name) continue
+
+        const rawBoxNameBase64 = Buffer.from(box.name).toString("base64")
 
         let badgeAppIdString: string
         try {
           const [appIdBigInt] = abiTypeUint64.decode(box.name) as [bigint]
           badgeAppIdString = appIdBigInt.toString()
         } catch (e) {
-          localErrors.push(`Could not decode badge App ID from box name: ${Buffer.from(box.name).toString("base64")}`)
+          localErrors.push(`Could not decode badge App ID from box name: ${rawBoxNameBase64}`)
           continue
         }
 
@@ -149,71 +138,12 @@ export default function ApprovePage() {
           badgeName = `Badge ID: ${badgeAppIdString}`
         }
 
-        // 3. Fetch users/applications from the individual badge contract
+        // 3. Fetch users count from the individual badge contract
         let totalUsers = 0
-        const pendingApplications = 0
         try {
           const userBoxesResponse = await indexerClient.searchForApplicationBoxes(Number(badgeAppIdString)).do()
-
-          if (userBoxesResponse.boxes && userBoxesResponse.boxes.length > 0) {
+          if (userBoxesResponse.boxes) {
             totalUsers = userBoxesResponse.boxes.length
-
-            // Process each user box to create applications
-            for (const userBox of userBoxesResponse.boxes) {
-              if (!userBox.name) continue
-
-              let userAddress = ""
-              try {
-                if (userBox.name.length === 32) {
-                  userAddress = algosdk.encodeAddress(userBox.name)
-                } else {
-                  localErrors.push(`Invalid user address format in badge ${badgeAppIdString}`)
-                  continue
-                }
-              } catch (addrError: any) {
-                localErrors.push(`Could not decode user address in badge ${badgeAppIdString}: ${addrError.message}`)
-                continue
-              }
-
-              let userDescription = "[No description]"
-              try {
-                const userBoxValueResponse = await indexerClient
-                  .lookupApplicationBoxByIDandName(Number(badgeAppIdString), userBox.name)
-                  .do()
-
-                let userValueBytes: Uint8Array
-                if (typeof userBoxValueResponse.value === "string") {
-                  userValueBytes = Buffer.from(userBoxValueResponse.value, "base64")
-                } else {
-                  userValueBytes = userBoxValueResponse.value
-                }
-
-                try {
-                  const [decodedDesc] = abiTypeString.decode(userValueBytes) as [string]
-                  userDescription = decodedDesc
-                } catch (abiError: any) {
-                  if (abiError.message && abiError.message.includes("string length bytes do not match")) {
-                    userDescription = Buffer.from(userValueBytes).toString("utf-8")
-                  }
-                }
-              } catch (e: any) {
-                localErrors.push(`Error fetching description for user ${userAddress} in badge ${badgeAppIdString}`)
-              }
-
-              // Create application entry
-              // Note: In a real system, you'd have additional metadata to determine if this is pending, approved, etc.
-              // For now, we'll treat all entries as "approved" since they're already in the badge contract
-              const application: PendingApplication = {
-                id: `${badgeAppIdString}_${userAddress}`,
-                badgeId: badgeAppIdString,
-                badgeName: badgeName,
-                applicantAddress: userAddress,
-                description: userDescription,
-                status: "fully_approved", // Since they're already in the contract
-              }
-
-              allApplications.push(application)
-            }
           }
         } catch (e: any) {
           localErrors.push(`Error fetching users for badge ${badgeAppIdString}: ${e.message}`)
@@ -222,13 +152,12 @@ export default function ApprovePage() {
         fetchedBadges.push({
           id: badgeAppIdString,
           name: badgeName,
-          pendingApplications: pendingApplications,
           totalUsers: totalUsers,
+          rawBoxName: rawBoxNameBase64,
         })
       }
 
       setBadges(fetchedBadges)
-      setApplications(allApplications)
 
       if (localErrors.length > 0) {
         setError("Some data could not be loaded: " + localErrors.join("; "))
@@ -248,83 +177,6 @@ export default function ApprovePage() {
       setIsLoading(false)
     }
   }, [userRole, loadBadgesAndApplications])
-
-  const handleApprove = async (applicationId: string, role: "admin" | "mentor") => {
-    try {
-      // In a real app, this would make an API call to update the application status
-      // and potentially trigger blockchain transactions
-
-      setApplications((prev) =>
-        prev.map((app) => {
-          if (app.id === applicationId) {
-            const updated = { ...app }
-            if (role === "admin") {
-              updated.status = updated.status === "mentor_approved" ? "fully_approved" : "admin_approved"
-            } else if (role === "mentor") {
-              updated.status = updated.status === "admin_approved" ? "fully_approved" : "mentor_approved"
-            }
-            return updated
-          }
-          return app
-        }),
-      )
-
-      console.log(`${role} approved application ${applicationId}`)
-    } catch (e: any) {
-      console.error(`Error approving application:`, e)
-    }
-  }
-
-  const handleReject = async (applicationId: string) => {
-    try {
-      setApplications((prev) => prev.map((app) => (app.id === applicationId ? { ...app, status: "rejected" } : app)))
-      console.log(`Rejected application ${applicationId}`)
-    } catch (e: any) {
-      console.error(`Error rejecting application:`, e)
-    }
-  }
-
-  const getStatusBadge = (status: PendingApplication["status"]) => {
-    switch (status) {
-      case "pending":
-        return (
-          <Badge variant="secondary">
-            <ClockIcon className="mr-1 h-3 w-3" />
-            Pending
-          </Badge>
-        )
-      case "admin_approved":
-        return (
-          <Badge variant="outline" className="text-blue-600 border-blue-600">
-            <UserCheckIcon className="mr-1 h-3 w-3" />
-            Admin Approved
-          </Badge>
-        )
-      case "mentor_approved":
-        return (
-          <Badge variant="outline" className="text-purple-600 border-purple-600">
-            <ShieldIcon className="mr-1 h-3 w-3" />
-            Mentor Approved
-          </Badge>
-        )
-      case "fully_approved":
-        return (
-          <Badge variant="default" className="bg-green-600">
-            <CheckCircleIcon className="mr-1 h-3 w-3" />
-            Fully Approved
-          </Badge>
-        )
-      case "rejected":
-        return (
-          <Badge variant="destructive">
-            <XCircleIcon className="mr-1 h-3 w-3" />
-            Rejected
-          </Badge>
-        )
-      default:
-        return <Badge variant="secondary">Unknown</Badge>
-    }
-  }
 
   // Show connection prompt if not connected
   if (!activeAccount) {
@@ -439,102 +291,59 @@ export default function ApprovePage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Applications</CardTitle>
+            <CardTitle className="text-sm font-medium">Your Role</CardTitle>
             <FileTextIcon className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{applications.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">Total processed</p>
+            <div className="text-2xl font-bold capitalize">{userRole}</div>
+            <p className="text-xs text-muted-foreground mt-1">Access level</p>
           </CardContent>
         </Card>
       </div>
 
       {/* Badge Details */}
-      <Card className="mb-8">
+      <Card>
         <CardHeader>
-          <CardTitle>Badge Overview</CardTitle>
-          <CardDescription>Summary of all badges and their current status</CardDescription>
+          <CardTitle>Badge Management</CardTitle>
+          <CardDescription>Click on a badge to review and approve its users</CardDescription>
         </CardHeader>
         <CardContent>
           {badges.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-4">No badges found.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-border">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Badge Name
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      App ID
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Total Users
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {badges.map((badge) => (
-                    <tr key={badge.id}>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">{badge.name}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-mono">{badge.id}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">{badge.totalUsers}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <Button variant="outline" size="sm" asChild>
-                          <a href={`/badges/${badge.id}`} target="_blank" rel="noopener noreferrer">
-                            View Details
-                          </a>
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Applications List */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Badge Holders</CardTitle>
-          <CardDescription>
-            Users who have been issued badges (Note: In a real approval system, this would show pending applications)
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {applications.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">No badge holders found.</p>
-          ) : (
-            <div className="space-y-4">
-              {applications.map((application) => (
-                <Card key={application.id} className="border-l-4 border-l-green-500">
-                  <CardHeader className="pb-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                      <div>
-                        <CardTitle className="text-base">{application.badgeName}</CardTitle>
-                        <CardDescription className="text-sm">
-                          Badge ID: {application.badgeId} • Holder: {application.applicantAddress.substring(0, 8)}...
-                          {application.applicantAddress.substring(application.applicantAddress.length - 8)}
-                        </CardDescription>
-                      </div>
-                      {getStatusBadge(application.status)}
-                    </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {badges.map((badge) => (
+                <Card key={badge.id} className="flex flex-col hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <CardTitle className="text-lg">{badge.name}</CardTitle>
+                    <CardDescription className="text-sm">
+                      Badge App ID: <span className="font-mono text-xs bg-muted px-1 rounded">{badge.id}</span>
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent className="pt-0">
-                    <div>
-                      <h4 className="font-semibold text-sm mb-2 flex items-center">
-                        <FileTextIcon className="mr-2 h-4 w-4" />
-                        Description
-                      </h4>
-                      <p className="text-sm text-muted-foreground bg-muted/50 p-3 rounded">{application.description}</p>
+                  <CardContent className="flex-grow">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Users:</span>
+                      <span className="text-lg font-semibold">{badge.totalUsers}</span>
                     </div>
                   </CardContent>
+                  <div className="p-6 pt-0 flex justify-between items-center gap-2 border-t">
+                    <Button variant="outline" size="sm" asChild className="flex-1">
+                      <Link href={`/approve/${badge.id}`}>
+                        <EyeIcon className="mr-1.5 h-3.5 w-3.5" /> Manage Users
+                      </Link>
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+                      <a
+                        href={`https://app.dappflow.org/explorer/application/${badge.id}/transactions`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="View on Explorer"
+                      >
+                        <ExternalLinkIcon className="h-4 w-4 text-muted-foreground" />
+                        <span className="sr-only">View on Explorer</span>
+                      </a>
+                    </Button>
+                  </div>
                 </Card>
               ))}
             </div>

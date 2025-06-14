@@ -1,25 +1,25 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import Link from "next/link"
+import Link from "next/link" // Keep Link import
 import * as algosdk from "algosdk"
-import { Buffer } from "buffer" // Ensure Buffer is available
+import { Buffer } from "buffer"
 
 import PageTitleHeader from "@/components/page-title-header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { AwardIcon, PlusCircleIcon, Edit3Icon, Trash2Icon, Loader2, AlertTriangle } from "lucide-react"
+import { AwardIcon, PlusCircleIcon, EyeIcon, Trash2Icon, Loader2, AlertTriangle, ExternalLinkIcon } from "lucide-react" // Changed Edit3Icon to EyeIcon or similar for "View Details"
 
 // Configuration
-const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
+const BADGE_MANAGER_APP_ID = 741171409
 const INDEXER_SERVER = "https://testnet-idx.algonode.cloud"
 const INDEXER_PORT = ""
 const INDEXER_TOKEN = ""
 
 interface BadgeInfo {
-  id: string // This will be the App ID of the badge contract
+  id: string
   name: string
-  rawBoxName: string // For debugging
+  rawBoxName: string
 }
 
 interface DebugInfo {
@@ -49,9 +49,7 @@ export default function BadgesPage() {
     try {
       const indexerClient = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT)
       const abiTypeString = algosdk.ABIType.from("(string)")
-      const abiTypeUint64 = algosdk.ABIType.from("(uint64)") // For decoding box names
-
-      newDebugInfo.appId = BADGE_MANAGER_APP_ID
+      const abiTypeUint64 = algosdk.ABIType.from("(uint64)")
 
       const boxesResponse = await indexerClient.searchForApplicationBoxes(BADGE_MANAGER_APP_ID).do()
       newDebugInfo.boxCount = boxesResponse.boxes.length
@@ -68,25 +66,22 @@ export default function BadgesPage() {
 
       for (const box of boxesResponse.boxes) {
         if (!box.name) continue
-
         const rawBoxNameBase64 = Buffer.from(box.name).toString("base64")
         newDebugInfo.processedBoxNames?.push(rawBoxNameBase64)
 
         let badgeAppIdString: string
         try {
-          // Decode box name using ABIType.from("(uint64)")
           const [appIdBigInt] = abiTypeUint64.decode(box.name) as [bigint]
           badgeAppIdString = appIdBigInt.toString()
         } catch (e) {
           const errorMsg = `Could not decode box name as uint64: ${rawBoxNameBase64}. Error: ${(e as Error).message}`
-          console.warn(errorMsg, e)
           newDebugInfo.errors?.push(`Skipping box: ${errorMsg}`)
           continue
         }
 
         try {
           const boxValueResponse = await indexerClient
-            .lookupApplicationBoxByIDandName(BADGE_MANAGER_APP_ID, box.name) // box.name must be Uint8Array
+            .lookupApplicationBoxByIDandName(BADGE_MANAGER_APP_ID, box.name)
             .do()
 
           let valueBytes: Uint8Array
@@ -98,31 +93,16 @@ export default function BadgesPage() {
 
           let badgeName: string
           try {
-            // Attempt to decode as ABI (string)
-            const decodedValue = abiTypeString.decode(valueBytes) as [string]
-            badgeName = decodedValue[0]
+            const [decodedValue] = abiTypeString.decode(valueBytes) as [string]
+            badgeName = decodedValue
           } catch (abiError: any) {
-            // If ABI decoding fails with the specific length error, try raw UTF-8
             if (abiError.message && abiError.message.includes("string length bytes do not match")) {
-              console.warn(
-                `ABI string decoding failed for box ${rawBoxNameBase64} (App ID: ${badgeAppIdString}). Falling back to raw UTF-8. Error: ${abiError.message}`,
-              )
               badgeName = Buffer.from(valueBytes).toString("utf-8")
-              // Basic check for non-printable characters or excessive length if it's a raw string
-              if (badgeName.length > 100 || (/[\x00-\x1F\x7F]/.test(badgeName) && !/[\t\n\r]/.test(badgeName))) {
-                console.warn(
-                  `Raw UTF-8 decoding for box ${rawBoxNameBase64} resulted in suspicious string: "${badgeName.substring(0, 50)}..."`,
-                )
-                // Potentially mark as undecodable or use a placeholder
-                // badgeName = `[Undecodable value for ${badgeAppIdString}]`;
-              }
             } else {
-              // Re-throw if it's a different ABI error
               throw abiError
             }
           }
 
-          // If badgeName is empty after attempting decodes, provide a placeholder
           if (!badgeName || badgeName.trim() === "") {
             badgeName = `[No name found for App ID: ${badgeAppIdString}]`
             newDebugInfo.errors?.push(
@@ -137,12 +117,11 @@ export default function BadgesPage() {
           })
         } catch (e: any) {
           const errorMsg = `Error processing value for box ${rawBoxNameBase64} (App ID: ${badgeAppIdString}): ${e.message}`
-          console.error(errorMsg, e)
           newDebugInfo.errors?.push(errorMsg)
         }
       }
 
-      setDebugInfo(newDebugInfo) // Update debug info once after the loop
+      setDebugInfo(newDebugInfo)
       setBadges(fetchedBadges)
 
       if (fetchedBadges.length === 0 && (newDebugInfo.errors?.length ?? 0) > 0) {
@@ -154,12 +133,10 @@ export default function BadgesPage() {
         setError("Found boxes, but could not decode any valid badge data.")
       }
     } catch (e: any) {
-      console.error("Failed to fetch badges:", e)
       setError(`Failed to fetch badges: ${e.message}`)
       newDebugInfo.errors?.push(`General fetch error: ${e.message}`)
     } finally {
       setIsLoading(false)
-      // Set debug info here as well to capture general errors
       setDebugInfo(newDebugInfo)
     }
   }, [])
@@ -233,33 +210,42 @@ export default function BadgesPage() {
                 <CardTitle className="text-lg">{badge.name}</CardTitle>
                 <CardDescription className="text-sm">
                   Badge App ID: <span className="font-mono text-xs bg-muted px-1 rounded">{badge.id}</span>
-                  <br />
-                  <span className="text-xs">Raw Box Name: {badge.rawBoxName}</span>
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex-grow">
-                <p className="text-xs text-muted-foreground">This badge is registered in the Badge Manager.</p>
+                <p className="text-xs text-muted-foreground">Raw Box Name (in Manager): {badge.rawBoxName}</p>
               </CardContent>
-              <CardFooter className="mt-auto flex justify-end gap-2 pt-4 border-t">
+              <CardFooter className="mt-auto flex justify-between items-center gap-2 pt-4 border-t">
                 <Button variant="outline" size="sm" asChild>
-                  <a
-                    href={`https://app.dappflow.org/explorer/application/${badge.id}/transactions`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <Link href={`/badges/${badge.id}`}>
+                    <EyeIcon className="mr-1.5 h-3.5 w-3.5" /> View Details
+                  </Link>
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+                    <a
+                      href={`https://app.dappflow.org/explorer/application/${badge.id}/transactions`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="View on Explorer"
+                    >
+                      <ExternalLinkIcon className="h-4 w-4 text-muted-foreground" />
+                      <span className="sr-only">View on Explorer</span>
+                    </a>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    onClick={() =>
+                      alert(`Deletion of badge ${badge.name} (App ID: ${badge.id}) requires a contract call.`)
+                    }
+                    title="Delete Badge"
                   >
-                    <Edit3Icon className="mr-1.5 h-3.5 w-3.5" /> View on Explorer
-                  </a>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/50 hover:border-destructive"
-                  onClick={() =>
-                    alert(`Deletion of badge ${badge.name} (App ID: ${badge.id}) requires a contract call.`)
-                  }
-                >
-                  <Trash2Icon className="mr-1.5 h-3.5 w-3.5" /> Delete
-                </Button>
+                    <Trash2Icon className="h-4 w-4" />
+                    <span className="sr-only">Delete</span>
+                  </Button>
+                </div>
               </CardFooter>
             </Card>
           ))}

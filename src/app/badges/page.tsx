@@ -224,7 +224,7 @@ export default function BadgesPage() {
                 <div className="flex gap-2">
                   <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
                     <a
-                      href={`https://app.dappflow.org/explorer/application/${badge.id}/transactions`}
+                      href={`https://lora.algokit.io/testnet/application/${badge.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       title="View on Explorer"

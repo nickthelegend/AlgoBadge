@@ -967,7 +967,7 @@ export default function ApproveDetailPage() {
                     <tr key={index} className="hover:bg-muted/30">
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-mono">
                         <a
-                          href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
+                          href={`https://lora.algokit.io/testnet/account/${user.address}/transactions`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="hover:underline text-primary"

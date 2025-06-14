@@ -582,7 +582,7 @@ export default function BadgeDetailPage() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-mono">
                         <div className="flex items-center">
                           <a
-                            href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
+                            href={`https://lora.algokit.io/testnet/account/${user.address}/transactions`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="hover:underline text-primary"

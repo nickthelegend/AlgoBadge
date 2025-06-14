@@ -113,14 +113,14 @@ export default function CreateBadgePage() {
     try {
       const algorand = AlgorandClient.fromConfig({
         algodConfig: {
-          server: process.env.NEXT_PUBLIC_ALGOD_SERVER || "https://testnet-api.algonode.cloud",
-          port: process.env.NEXT_PUBLIC_ALGOD_PORT || "",
-          token: process.env.NEXT_PUBLIC_ALGOD_TOKEN || "",
+          server: "https://testnet-api.algonode.cloud",
+          port: "",
+          token: "",
         },
         indexerConfig: {
-          server: process.env.NEXT_PUBLIC_INDEXER_SERVER || "https://testnet-idx.algonode.cloud",
-          port: process.env.NEXT_PUBLIC_INDEXER_PORT || "",
-          token: process.env.NEXT_PUBLIC_INDEXER_TOKEN || "",
+          server: "https://testnet-api.algonode.cloud",
+          port: "",
+          token: "",
         },
       })
       // await algorand.ensureFunded(
@@ -178,11 +178,15 @@ export default function CreateBadgePage() {
         defaultSender: activeAddress,
         defaultSigner: transactionSigner,
       })
+      const ipfsURL = `ipfs://${ipfsHash}`
 
+      console.log("New Badge App ID:", newBadgeAppId);
+      console.log("New Badge App Address:", appAddress);
       // 3. Grouped transaction
-      if(!ipfsHash){
-        return
-      }
+      // if (!ipfsHash) {
+      //   toast.error("IPFS hash is missing. Cannot continue.");
+      //   return;
+      // }
       await algorand.newGroup()
         .addAppCallMethodCall(
           await badgeManager.params.createBadge({
@@ -203,12 +207,11 @@ export default function CreateBadgePage() {
         .addAppCallMethodCall(
           await newBadgeContract.params.createBadge({
             args:{
-              assetUrl: ipfsHash,
+              assetUrl: ipfsURL,
               totalTickets: BigInt(maxSupply),
             }
           })
-        )
-        .send({ populateAppCallResources: true })
+        ).send({ populateAppCallResources: true })
 
       toast.dismiss("finalizing")
       toast.success("Badge created and registered successfully on the blockchain!")

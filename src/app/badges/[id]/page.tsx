@@ -2,19 +2,37 @@
 
 import { useEffect, useState, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
+import { useWallet } from "@txnlab/use-wallet-react"
 import * as algosdk from "algosdk"
 import { Buffer } from "buffer"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import PageTitleHeader from "@/components/page-title-header"
-import { AwardIcon, Loader2, AlertTriangle, UsersIcon, TagIcon, ArrowLeftIcon, ListChecks } from "lucide-react"
+import {
+  AwardIcon,
+  Loader2,
+  AlertTriangle,
+  UsersIcon,
+  TagIcon,
+  ArrowLeftIcon,
+  ListChecks,
+  Send,
+  CheckCircle,
+  FileText,
+} from "lucide-react"
+import { toast } from "react-toastify"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
 const INDEXER_SERVER = "https://testnet-idx.algonode.cloud"
+const ALGOD_SERVER = "https://testnet-api.algonode.cloud"
 const INDEXER_PORT = ""
 const INDEXER_TOKEN = ""
+const ALGOD_PORT = ""
+const ALGOD_TOKEN = ""
 
 interface BadgeDetails {
   id: string
@@ -31,12 +49,49 @@ interface RegisteredUser {
 export default function BadgeDetailPage() {
   const params = useParams()
   const router = useRouter()
+  const { activeAccount, activeAddress, transactionSigner } = useWallet()
   const badgeAppId = params.id as string
 
   const [badgeDetails, setBadgeDetails] = useState<BadgeDetails | null>(null)
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Application form state
+  const [applicationDescription, setApplicationDescription] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [hasApplied, setHasApplied] = useState(false)
+  const [userAlreadyRegistered, setUserAlreadyRegistered] = useState(false)
+
+  const fetchAssetIdFromAPI = useCallback(async (appId: string): Promise<number | undefined> => {
+    try {
+      const response = await fetch(`${INDEXER_SERVER}/v2/applications/${appId}`)
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const data = await response.json()
+      const globalState = data.application?.params?.["global-state"]
+
+      if (!globalState) {
+        console.warn("No global state found for application")
+        return undefined
+      }
+
+      // Look for the assetID key (base64 encoded "assetID" is "YXNzZXRJRA==")
+      const assetIdEntry = globalState.find((entry: any) => entry.key === "YXNzZXRJRA==")
+
+      if (assetIdEntry && assetIdEntry.value && assetIdEntry.value.uint !== undefined) {
+        return Number(assetIdEntry.value.uint)
+      }
+
+      console.warn("Asset ID not found in global state")
+      return undefined
+    } catch (error) {
+      console.error("Error fetching asset ID from API:", error)
+      return undefined
+    }
+  }, [])
 
   const fetchBadgeData = useCallback(async () => {
     if (!badgeAppId) {
@@ -58,7 +113,6 @@ export default function BadgeDetailPage() {
 
       // 1. Fetch Badge Name from Badge Manager
       try {
-        // The box name in Badge Manager is the uint64 encoded App ID of the badge
         const badgeAppIdAsUint64Bytes = abiTypeUint64.encode(BigInt(badgeAppId))
         rawBoxNameInManagerForDebug = Buffer.from(badgeAppIdAsUint64Bytes).toString("base64")
 
@@ -80,7 +134,7 @@ export default function BadgeDetailPage() {
           if (abiError.message && abiError.message.includes("string length bytes do not match")) {
             fetchedBadgeName = Buffer.from(managerValueBytes).toString("utf-8")
           } else {
-            throw abiError // Re-throw other ABI errors
+            throw abiError
           }
         }
       } catch (e: any) {
@@ -88,74 +142,10 @@ export default function BadgeDetailPage() {
         console.warn(`Could not fetch badge name for ${badgeAppId} from Badge Manager:`, e)
       }
 
-      // 2. Fetch Asset ID from the badge contract's global state
-      let fetchedAssetId: number | undefined = undefined
-      try {
-        const appInfo = await indexerClient.lookupApplications(Number(badgeAppId)).do()
-        if (appInfo.application && appInfo.application.params && appInfo.application.params["global-state"]) {
-          const globalState = appInfo.application.params["global-state"]
-          console.log("Global state for badge contract:", globalState) // Debug log
-
-          const assetIdEntry = globalState.find((entry: any) => {
-            // Decode the key properly
-            let keyStr: string
-            if (typeof entry.key === "string") {
-              // entry.key is base64-encoded string
-              keyStr = Buffer.from(entry.key, "base64").toString()
-            } else {
-              // entry.key is Uint8Array
-              keyStr = Buffer.from(entry.key).toString()
-            }
-            console.log("Checking global state key:", keyStr) // Debug log
-            return keyStr === "assetID"
-          })
-
-          if (assetIdEntry) {
-            console.log("Found assetID entry:", assetIdEntry) // Debug log
-            if (assetIdEntry.value && assetIdEntry.value.uint !== undefined) {
-              fetchedAssetId = Number(assetIdEntry.value.uint)
-              console.log("Decoded Asset ID:", fetchedAssetId)
-            } else if (assetIdEntry.value && assetIdEntry.value.bytes) {
-              // Sometimes asset ID might be stored as bytes, try to decode
-              const assetIdBytes =
-                typeof assetIdEntry.value.bytes === "string"
-                  ? Buffer.from(assetIdEntry.value.bytes, "base64")
-                  : Buffer.from(assetIdEntry.value.bytes)
-
-              if (assetIdBytes.length === 8) {
-                // Try to decode as uint64
-                try {
-                  const assetIdBigInt = algosdk.decodeUint64(assetIdBytes, "safe")
-                  fetchedAssetId = Number(assetIdBigInt)
-                  console.log("Decoded Asset ID from bytes:", fetchedAssetId)
-                } catch (decodeError) {
-                  localErrors.push(`Could not decode asset ID from bytes: ${decodeError}`)
-                }
-              } else {
-                localErrors.push(`Asset ID bytes length unexpected: ${assetIdBytes.length}`)
-              }
-            } else {
-              localErrors.push("assetID entry found but value format is unexpected.")
-            }
-          } else {
-            localErrors.push("assetID key not found in global state of badge contract.")
-            console.log(
-              "Available global state keys:",
-              globalState.map((entry: any) => {
-                const keyStr =
-                  typeof entry.key === "string"
-                    ? Buffer.from(entry.key, "base64").toString()
-                    : Buffer.from(entry.key).toString()
-                return keyStr
-              }),
-            )
-          }
-        } else {
-          localErrors.push("Could not retrieve global state for badge contract.")
-        }
-      } catch (e: any) {
-        localErrors.push(`Error fetching asset ID from global state: ${e.message}`)
-        console.error(`Error fetching asset ID for ${badgeAppId}:`, e)
+      // 2. Fetch Asset ID using the new API method
+      const fetchedAssetId = await fetchAssetIdFromAPI(badgeAppId)
+      if (!fetchedAssetId) {
+        localErrors.push("Could not fetch Asset ID from badge contract")
       }
 
       setBadgeDetails({
@@ -175,11 +165,9 @@ export default function BadgeDetailPage() {
 
             let userAddress = ""
             try {
-              // Box name is expected to be raw public key bytes (32 bytes)
               if (box.name.length === 32) {
                 userAddress = algosdk.encodeAddress(box.name)
               } else {
-                // If not 32 bytes, it might be something else or an error in contract logic
                 localErrors.push(`Box name for user is not 32 bytes: ${Buffer.from(box.name).toString("base64")}`)
                 userAddress = `[Invalid Address Format: ${Buffer.from(box.name).toString("base64")}]`
               }
@@ -188,6 +176,11 @@ export default function BadgeDetailPage() {
                 `Could not decode user address from box name ${Buffer.from(box.name).toString("base64")}: ${addrError.message}`,
               )
               continue
+            }
+
+            // Check if current user is already registered
+            if (activeAddress && userAddress === activeAddress) {
+              setUserAlreadyRegistered(true)
             }
 
             let userDescription = "[No description]"
@@ -210,7 +203,6 @@ export default function BadgeDetailPage() {
                 if (abiError.message && abiError.message.includes("string length bytes do not match")) {
                   userDescription = Buffer.from(userValueBytes).toString("utf-8")
                 } else {
-                  // Log other ABI errors but don't stop processing other users
                   localErrors.push(`ABI decoding error for user ${userAddress} description: ${abiError.message}`)
                 }
               }
@@ -229,7 +221,7 @@ export default function BadgeDetailPage() {
       }
 
       if (localErrors.length > 0) {
-        setError(localErrors.join("; ")) // Concatenate errors or handle them more gracefully
+        setError(localErrors.join("; "))
       }
     } catch (e: any) {
       console.error("Overall fetch error for badge details:", e)
@@ -237,11 +229,103 @@ export default function BadgeDetailPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [badgeAppId])
+  }, [badgeAppId, activeAddress, fetchAssetIdFromAPI])
 
   useEffect(() => {
     fetchBadgeData()
   }, [fetchBadgeData])
+
+  const handleApplyForBadge = async () => {
+    if (!activeAddress || !transactionSigner || !badgeDetails?.assetId) {
+      toast.error("Please connect your wallet and ensure badge data is loaded.")
+      return
+    }
+
+    if (!applicationDescription.trim()) {
+      toast.error("Please provide a description for your application.")
+      return
+    }
+
+    setIsSubmitting(true)
+    toast.info("Preparing transactions...", { autoClose: false, toastId: "applying" })
+
+    try {
+      const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+      const suggestedParams = await algodClient.getTransactionParams().do()
+
+      // Create the registerEvent transaction
+      const txn = algosdk.makeApplicationNoOpTxnFromObject({
+        sender: activeAddress,
+        appIndex: Number(badgeAppId),
+        appArgs: [
+          algosdk
+            .getMethodByName(
+              [
+                new algosdk.ABIMethod({
+                  name: "registerEvent",
+                  desc: "",
+                  args: [{ type: "string", name: "email", desc: "" }],
+                  returns: { type: "void", desc: "" },
+                }),
+              ],
+              "registerEvent",
+            )
+            .getSelector(),
+          new algosdk.ABIStringType().encode(applicationDescription.trim()),
+        ],
+        suggestedParams: { ...suggestedParams },
+        boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
+        foreignAssets: [badgeDetails.assetId],
+      })
+
+      // Create the opt-in transaction
+      const optInTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+        sender: activeAddress,
+        receiver: activeAddress,
+        assetIndex: badgeDetails.assetId,
+        amount: 0,
+        suggestedParams,
+      })
+
+      // Group the transactions
+      const txns = [optInTxn, txn]
+      algosdk.assignGroupID(txns)
+
+      toast.update("applying", { render: "Signing transactions..." })
+
+      // Sign both transactions
+      const signedTxns = await transactionSigner(txns, [0, 1])
+
+      toast.update("applying", { render: "Sending transactions to network..." })
+
+      // Send the signed group to the network
+      const { txid } = await algodClient.sendRawTransaction(signedTxns).do()
+
+      toast.update("applying", {
+        render: "Application submitted successfully!",
+        type: "success",
+        autoClose: 5000,
+      })
+
+      console.log("Transaction ID:", txid)
+      setHasApplied(true)
+      setApplicationDescription("")
+
+      // Refresh badge data to show the new registration
+      setTimeout(() => {
+        fetchBadgeData()
+      }, 3000)
+    } catch (error: any) {
+      console.error("Error applying for badge:", error)
+      toast.update("applying", {
+        render: `Application failed: ${error.message || "Unknown error"}`,
+        type: "error",
+        autoClose: 5000,
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -253,7 +337,6 @@ export default function BadgeDetailPage() {
   }
 
   if (error && !badgeDetails) {
-    // Show critical error if badgeDetails couldn't even be partially loaded
     return (
       <div className="container mx-auto p-4">
         <Button variant="outline" onClick={() => router.push("/badges")} className="mb-4">
@@ -278,7 +361,6 @@ export default function BadgeDetailPage() {
   }
 
   if (!badgeDetails) {
-    // Should be covered by error state, but as a fallback
     return (
       <div className="container mx-auto p-4 text-center">
         <p>Badge not found or could not be loaded.</p>
@@ -298,10 +380,10 @@ export default function BadgeDetailPage() {
       <PageTitleHeader
         icon={<AwardIcon />}
         title={badgeDetails.name}
-        subtitle={`Details for Badge App ID: ${badgeDetails.id}`}
+        subtitle={`Badge App ID: ${badgeDetails.id} • Apply for this badge or view registered users`}
       />
 
-      {error && ( // Display non-critical errors (e.g., if some parts failed but main details loaded)
+      {error && (
         <Card className="mb-6 bg-amber-50 border-amber-300">
           <CardHeader>
             <CardTitle className="text-amber-700 text-lg flex items-center">
@@ -339,7 +421,7 @@ export default function BadgeDetailPage() {
             ) : (
               <p className="text-sm text-muted-foreground">Not found or N/A</p>
             )}
-            <p className="text-xs text-muted-foreground mt-1">From badge contract global state</p>
+            <p className="text-xs text-muted-foreground mt-1">From badge contract API</p>
           </CardContent>
         </Card>
         <Card>
@@ -354,6 +436,100 @@ export default function BadgeDetailPage() {
         </Card>
       </div>
 
+      {/* Application Form */}
+      {!userAlreadyRegistered && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Send className="mr-2 h-5 w-5 text-primary" />
+              Apply for This Badge
+            </CardTitle>
+            <CardDescription>
+              Submit your application to earn this badge. You'll need to opt-in to the associated asset and register
+              your details.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {!activeAccount ? (
+              <div className="text-center py-8">
+                <p className="text-muted-foreground mb-4">Please connect your wallet to apply for this badge.</p>
+              </div>
+            ) : hasApplied ? (
+              <div className="text-center py-8">
+                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-green-700 mb-2">Application Submitted!</h3>
+                <p className="text-muted-foreground">
+                  Your application has been submitted successfully. The page will refresh shortly to show your
+                  registration.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="application-description" className="flex items-center">
+                    <FileText className="mr-2 h-4 w-4 text-muted-foreground" />
+                    Description / Email
+                  </Label>
+                  <Textarea
+                    id="application-description"
+                    value={applicationDescription}
+                    onChange={(e) => setApplicationDescription(e.target.value)}
+                    placeholder="Provide your email address or a brief description of why you deserve this badge..."
+                    rows={4}
+                    disabled={isSubmitting}
+                  />
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleApplyForBadge}
+                    disabled={isSubmitting || !applicationDescription.trim() || !badgeDetails.assetId}
+                    className="min-w-[150px]"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Applying...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="mr-2 h-4 w-4" />
+                        Apply for Badge
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {!badgeDetails.assetId && (
+                  <p className="text-sm text-amber-600 bg-amber-50 p-3 rounded">
+                    ⚠️ Asset ID not found. Application may not work properly.
+                  </p>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* User Already Registered Message */}
+      {userAlreadyRegistered && (
+        <Card className="mb-8 bg-green-50 border-green-200">
+          <CardHeader>
+            <CardTitle className="flex items-center text-green-700">
+              <CheckCircle className="mr-2 h-5 w-5" />
+              You Already Have This Badge!
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-green-600">
+              Congratulations! You are already registered for this badge. You can see your entry in the registered users
+              list below.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Registered Users List */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
@@ -378,16 +554,21 @@ export default function BadgeDetailPage() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {registeredUsers.map((user, index) => (
-                    <tr key={index}>
+                    <tr key={index} className={user.address === activeAddress ? "bg-green-50" : ""}>
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-mono">
-                        <a
-                          href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hover:underline text-primary"
-                        >
-                          {user.address.substring(0, 8)}...{user.address.substring(user.address.length - 8)}
-                        </a>
+                        <div className="flex items-center">
+                          <a
+                            href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:underline text-primary"
+                          >
+                            {user.address.substring(0, 8)}...{user.address.substring(user.address.length - 8)}
+                          </a>
+                          {user.address === activeAddress && (
+                            <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">You</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 whitespace-normal text-sm text-muted-foreground break-all">
                         {user.description}

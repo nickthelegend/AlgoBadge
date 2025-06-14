@@ -26,6 +26,8 @@ import {
   Settings,
 } from "lucide-react"
 import { toast } from "react-toastify"
+import { AlgorandClient } from "@algorandfoundation/algokit-utils"
+import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -67,8 +69,24 @@ interface RegisteredUser {
   mentorSignature?: string
 }
 
-// Mock MsigAppClient - replace with actual import
+// Helper functions for multisig operations
+function combineUint64AndUint8(uint64: number, uint8: number) {
+  const uint64buffer = algosdk.bigIntToBytes(uint64, 8)
+  const uint8buffer = algosdk.bigIntToBytes(uint8, 1)
+  const combinedbuffer = new Uint8Array(9)
+  combinedbuffer.set(uint64buffer, 0)
+  combinedbuffer.set(uint8buffer, 8)
+  return combinedbuffer
+}
 
+function combineAddressAndUint64(address: string, uint64: number) {
+  const addressbuffer = algosdk.decodeAddress(address).publicKey
+  const uint64buffer = algosdk.bigIntToBytes(uint64, 8)
+  const combinedbuffer = new Uint8Array(40)
+  combinedbuffer.set(uint64buffer, 0)
+  combinedbuffer.set(addressbuffer, 8)
+  return combinedbuffer
+}
 
 export default function ApproveDetailPage() {
   const params = useParams()
@@ -82,6 +100,7 @@ export default function ApproveDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [userRole, setUserRole] = useState<"admin" | "mentor" | "unauthorized" | null>(null)
   const [isCreatingMultisig, setIsCreatingMultisig] = useState(false)
+  const [isApproving, setIsApproving] = useState(false)
 
   // Check user authorization
   useEffect(() => {
@@ -384,6 +403,7 @@ export default function ApproveDetailPage() {
         },
       )
       const app_id = deployment.appId
+      const app_address = deployment.appAddress
 
       toast.update("multisig", { render: "Setting up Multisig Contract..." })
 
@@ -400,9 +420,63 @@ export default function ApproveDetailPage() {
           },
         },
       )
-
+      const suggestedParams = await algodClient.getTransactionParams().do()
+      if (!activeAddress || !transactionSigner) {
+        toast.error("Please connect your wallet and ensure badge data is loaded.")
+        return
+      }
       console.log("Generated App ID:", app_id)
+      const txn = algosdk.makeApplicationNoOpTxnFromObject({
+        sender: activeAddress,
+        appIndex: Number(badgeAppId),
+        appArgs: [
+          algosdk
+            .getMethodByName(
+              [
+                new algosdk.ABIMethod({
+                  name: "assignAppID",
+                  desc: "",
+                  args: [{ type: "uint64", name: "appID", desc: "" }],
+                  returns: { type: "void", desc: "" },
+                }),
+              ],
+              "assignAppID",
+            )
+            .getSelector(),
+        ],
+        suggestedParams: { ...suggestedParams },
+        boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
+      })
 
+      const txns = [ txn]
+      algosdk.assignGroupID(txns)
+
+      toast.update("applying", { render: "Signing transactions..." })
+      const algorand = AlgorandClient.fromConfig({
+        algodConfig: {
+          server: "https://testnet-api.algonode.cloud",
+          port: "",
+          token: "",
+        },
+        indexerConfig: {
+          server: "https://testnet-api.algonode.cloud", // Corrected: was algonode.cloud, should be idx for indexer
+          port: "",
+          token: "",
+        },
+      })
+
+     await algorand.newGroup()
+      .addPayment({
+        sender: activeAddress,
+        receiver: app_address,
+        amount: AlgoAmount.MicroAlgos(300_000),
+        signer: transactionSigner,
+      })
+      .send({ populateAppCallResources: true })
+      // Sign both transactions
+      const signedTxns = await transactionSigner(txns, [0, 1])
+
+      toast.update("applying", { render: "Sending transactions to network..." })
       toast.update("multisig", {
         render: `Multisig App created successfully! App ID: ${app_id}`,
         type: "success",
@@ -429,32 +503,202 @@ export default function ApproveDetailPage() {
     }
   }
 
+  const getNewGroupId = async (appClient: MsigAppClient) => {
+    const global = await appClient.getGlobalState()
+    if (global.arc55_nonce) {
+      const nonce = global.arc55_nonce?.asNumber()
+      return nonce + 1
+    } else {
+      return 1
+    }
+  }
+
   const handleApprove = async (userAddress: string, role: "admin" | "mentor") => {
-    try {
-      // In a real app, this would make an API call to update the approval status
-      // and potentially trigger blockchain transactions
+    if (!activeAccount || !transactionSigner) {
+      toast.error("Please connect your wallet first.")
+      return
+    }
 
-      setRegisteredUsers((prev) =>
-        prev.map((user) => {
-          if (user.address === userAddress) {
-            const updated = { ...user }
-            if (role === "admin") {
-              updated.approved = true
-              updated.status = updated.multiSignAppID > 0 ? "fully_approved" : "admin_approved"
-              updated.adminSignature = `admin_sig_${Date.now()}`
-            } else if (role === "mentor") {
-              updated.status = updated.approved ? "fully_approved" : "mentor_approved"
-              updated.mentorSignature = `mentor_sig_${Date.now()}`
-            }
-            return updated
+    const user = registeredUsers.find((u) => u.address === userAddress)
+    if (!user) {
+      toast.error("User not found.")
+      return
+    }
+
+    // If user has a multisig app ID, use multisig flow
+    if (user.multiSignAppID > 0) {
+      setIsApproving(true)
+      toast.info("Creating multisig transaction for approval...", { autoClose: false, toastId: "approving" })
+
+      try {
+        const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+
+        // Initialize the Multisig App Client with the user's multisig app ID
+        const appClient = new MsigAppClient(
+          {
+            resolveBy: "id",
+            id: Number(user.multiSignAppID),
+          },
+          algodClient,
+        )
+
+        // Get app reference and multisig details
+        const appReference = await appClient.appClient.getAppReference()
+        const global = await appClient.getGlobalState()
+
+        let threshold = 2
+        const addresses: string[] = [MASTER_ADDRESS, ADMIN_ADDRESS]
+
+        if (global.arc55_threshold) {
+          threshold = global.arc55_threshold.asNumber()
+        }
+
+        // Get addresses from global state
+        const rawGlobal = await appClient.appClient.getGlobalState()
+        const addressList: { index: number; address: string }[] = []
+        Object.keys(rawGlobal).forEach((key) => {
+          const val = rawGlobal[key]
+          if (val.keyRaw.length === 8) {
+            addressList.push({
+              index: Number(algosdk.bytesToBigInt(val.keyRaw)),
+              address: "valueRaw" in val ? algosdk.encodeAddress(val.valueRaw) : "",
+            })
           }
-          return user
-        }),
-      )
+        })
 
-      console.log(`${role} approved user ${userAddress} for badge ${badgeAppId}`)
-    } catch (e: any) {
-      console.error(`Error approving user:`, e)
+        const orderedAddresses = addressList.sort((a, b) => a.index - b.index)
+        const onlyAddresses = orderedAddresses.map((a) => a.address)
+
+        const multiSig = algosdk.multisigAddress({
+          version: 1,
+          threshold: threshold,
+          addrs: onlyAddresses,
+        })
+
+        console.log("Multisig address:", multiSig)
+
+        toast.update("approving", { render: "Creating approval transaction..." })
+
+        // Create a test transaction (you can modify this to be the actual approval transaction)
+        const encoder = new TextEncoder()
+        const approvalTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: multiSig,
+          receiver: multiSig,
+          amount: 0,
+          suggestedParams: await algodClient.getTransactionParams().do(),
+          note: encoder.encode(`Approval for ${userAddress} by ${role}`),
+        })
+
+        const txnSize = approvalTxn.toByte().length
+        const mbrCost = 2500 + 400 * (9 + txnSize)
+
+        const newGroupId = await getNewGroupId(appClient)
+
+        const add_txn_mbr = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: activeAccount.address,
+          receiver: appReference.appAddress,
+          amount: mbrCost,
+          suggestedParams: await algodClient.getTransactionParams().do(),
+        })
+
+        const boxes = Array.from({ length: 8 }, () => ({
+          appIndex: 0,
+          name: combineUint64AndUint8(newGroupId, 0),
+        }))
+
+        const final_txn = appClient
+          .compose()
+          .arc55NewTransactionGroup(
+            {},
+            {
+              sender: {
+                signer: transactionSigner,
+                addr: activeAccount.address,
+              },
+            },
+          )
+          .arc55AddTransaction(
+            {
+              costs: add_txn_mbr,
+              transactionGroup: newGroupId,
+              index: 0,
+              transaction: approvalTxn.toByte(),
+            },
+            {
+              sender: {
+                signer: transactionSigner,
+                addr: activeAccount.address,
+              },
+              boxes: boxes,
+            },
+          )
+
+        const res = await final_txn.execute()
+        console.log(`Approval Transaction Created: ${res.txIds[1]}\ngroup: ${newGroupId}`)
+
+        toast.update("approving", {
+          render: `Multisig approval transaction created! Group: ${newGroupId}`,
+          type: "success",
+          autoClose: 5000,
+        })
+
+        // Update the user's status in local state
+        setRegisteredUsers((prev) =>
+          prev.map((u) => {
+            if (u.address === userAddress) {
+              const updated = { ...u }
+              if (role === "admin") {
+                updated.approved = true
+                updated.status = "fully_approved"
+                updated.adminSignature = `multisig_approval_${Date.now()}`
+              } else if (role === "mentor") {
+                updated.status = updated.approved ? "fully_approved" : "mentor_approved"
+                updated.mentorSignature = `multisig_approval_${Date.now()}`
+              }
+              return updated
+            }
+            return u
+          }),
+        )
+
+        console.log(`${role} created multisig approval for user ${userAddress} in group ${newGroupId}`)
+      } catch (error: any) {
+        console.error("Error creating multisig approval:", error)
+        toast.update("approving", {
+          render: `Failed to create multisig approval: ${error.message || "Unknown error"}`,
+          type: "error",
+          autoClose: 5000,
+        })
+      } finally {
+        setIsApproving(false)
+      }
+    } else {
+      // Regular approval flow (no multisig)
+      try {
+        setRegisteredUsers((prev) =>
+          prev.map((u) => {
+            if (u.address === userAddress) {
+              const updated = { ...u }
+              if (role === "admin") {
+                updated.approved = true
+                updated.status = updated.multiSignAppID > 0 ? "fully_approved" : "admin_approved"
+                updated.adminSignature = `admin_sig_${Date.now()}`
+              } else if (role === "mentor") {
+                updated.status = updated.approved ? "fully_approved" : "mentor_approved"
+                updated.mentorSignature = `mentor_sig_${Date.now()}`
+              }
+              return updated
+            }
+            return u
+          }),
+        )
+
+        console.log(`${role} approved user ${userAddress} for badge ${badgeAppId}`)
+        toast.success(`User approved successfully!`)
+      } catch (e: any) {
+        console.error(`Error approving user:`, e)
+        toast.error(`Failed to approve user: ${e.message}`)
+      }
     }
   }
 
@@ -464,8 +708,10 @@ export default function ApproveDetailPage() {
         prev.map((user) => (user.address === userAddress ? { ...user, status: "rejected" } : user)),
       )
       console.log(`Rejected user ${userAddress} for badge ${badgeAppId}`)
+      toast.success("User rejected successfully!")
     } catch (e: any) {
       console.error(`Error rejecting user:`, e)
+      toast.error(`Failed to reject user: ${e.message}`)
     }
   }
 
@@ -748,9 +994,19 @@ export default function ApproveDetailPage() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
                         <div className="flex flex-col gap-2">
                           {canUserApprove(user, userRole!) && user.status !== "rejected" && (
-                            <Button size="sm" onClick={() => handleApprove(user.address, userRole!)} className="w-full">
-                              <CheckCircleIcon className="mr-1 h-3 w-3" />
+                            <Button
+                              size="sm"
+                              onClick={() => handleApprove(user.address, userRole!)}
+                              disabled={isApproving}
+                              className="w-full"
+                            >
+                              {isApproving ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <CheckCircleIcon className="mr-1 h-3 w-3" />
+                              )}
                               {userRole === "admin" ? "Approve" : "Mentor Approve"}
+                              {user.multiSignAppID > 0 && " (Multisig)"}
                             </Button>
                           )}
 

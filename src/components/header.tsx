@@ -12,7 +12,6 @@ const navLinksBase = [
   { href: "/", label: "Home", icon: <HomeIcon className="h-5 w-5" /> },
   { href: "/badges", label: "Badges", icon: <AwardIcon className="h-5 w-5" /> },
   { href: "/quiz", label: "Quiz", icon: <BrainIcon className="h-5 w-5" /> },
-  { href: "/verify", label: "Apply Badge", icon: <ShieldCheckIcon className="h-5 w-5" /> },
   { href: "/approve", label: "Approve", icon: <CheckCircleIcon className="h-5 w-5" /> },
   { href: "/users", label: "Users", icon: <UsersIcon className="h-5 w-5" /> },
 ]

@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation"
 import { useWallet } from "@txnlab/use-wallet-react"
 import * as algosdk from "algosdk"
 import { Buffer } from "buffer"
-
+import { MsigAppClient } from "@/contracts/MsigAppClient"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -23,13 +23,18 @@ import {
   ArrowLeftIcon,
   ListChecks,
   AwardIcon,
+  Settings,
 } from "lucide-react"
+import { toast } from "react-toastify"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
 const INDEXER_SERVER = "https://testnet-idx.algonode.cloud"
+const ALGOD_SERVER = "https://testnet-api.algonode.cloud"
 const INDEXER_PORT = ""
 const INDEXER_TOKEN = ""
+const ALGOD_PORT = ""
+const ALGOD_TOKEN = ""
 
 const ADMIN_ADDRESSES = [
   "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4", // Your admin address
@@ -41,6 +46,10 @@ const MENTOR_ADDRESSES = [
   "MENTOR_ADDRESS_2_HERE", // Replace with actual mentor address
 ]
 
+// Multisig configuration
+const MASTER_ADDRESS = "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q"
+const ADMIN_ADDRESS = "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4"
+
 interface BadgeDetails {
   id: string
   name: string
@@ -50,16 +59,21 @@ interface BadgeDetails {
 
 interface RegisteredUser {
   address: string
-  description: string // Email or other description
+  approved: boolean
+  description: string // desc field
+  multiSignAppID: number // multiSignAppID field
   status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
   adminSignature?: string
   mentorSignature?: string
 }
 
+// Mock MsigAppClient - replace with actual import
+
+
 export default function ApproveDetailPage() {
   const params = useParams()
   const router = useRouter()
-  const { activeAccount, activeAddress } = useWallet()
+  const { activeAccount, activeAddress, transactionSigner } = useWallet()
   const badgeAppId = params.id as string
 
   const [badgeDetails, setBadgeDetails] = useState<BadgeDetails | null>(null)
@@ -67,6 +81,7 @@ export default function ApproveDetailPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [userRole, setUserRole] = useState<"admin" | "mentor" | "unauthorized" | null>(null)
+  const [isCreatingMultisig, setIsCreatingMultisig] = useState(false)
 
   // Check user authorization
   useEffect(() => {
@@ -96,7 +111,7 @@ export default function ApproveDetailPage() {
 
     try {
       const indexerClient = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT)
-      const abiTypeString = algosdk.ABIType.from("(string)")
+      const abiTypeString = algosdk.ABIType.from("(bool,string,uint64)")
       const abiTypeUint64 = algosdk.ABIType.from("(uint64)")
 
       let fetchedBadgeName = `Badge ID: ${badgeAppId}` // Default name
@@ -236,7 +251,9 @@ export default function ApproveDetailPage() {
               continue
             }
 
+            let approved = false
             let userDescription = "[No description]"
+            let multiSignAppID = 0
             try {
               const userBoxValueResponse = await indexerClient
                 .lookupApplicationBoxByIDandName(Number(badgeAppId), box.name)
@@ -250,28 +267,45 @@ export default function ApproveDetailPage() {
               }
 
               try {
-                const [decodedDesc] = abiTypeString.decode(userValueBytes) as [string]
+                const [decodedApproved, decodedDesc, decodedMultiSignAppID] = abiTypeString.decode(userValueBytes) as [
+                  boolean,
+                  string,
+                  bigint,
+                ]
+                approved = decodedApproved
                 userDescription = decodedDesc
+                multiSignAppID = Number(decodedMultiSignAppID)
               } catch (abiError: any) {
-                if (abiError.message && abiError.message.includes("string length bytes do not match")) {
+                localErrors.push(`ABI decoding error for user ${userAddress}: ${abiError.message}`)
+                // Fallback to try reading as string for backward compatibility
+                try {
                   userDescription = Buffer.from(userValueBytes).toString("utf-8")
-                } else {
-                  // Log other ABI errors but don't stop processing other users
-                  localErrors.push(`ABI decoding error for user ${userAddress} description: ${abiError.message}`)
+                } catch {
+                  // Keep default values
                 }
               }
             } catch (e: any) {
               localErrors.push(`Error fetching description for user ${userAddress}: ${e.message}`)
             }
 
-            // Since users are already in the badge contract, they're considered approved
-            // In a real system, you might have additional metadata to track approval status
+            // Determine status based on approval and multisig app ID
+            let status: RegisteredUser["status"] = "pending"
+            if (approved && multiSignAppID > 0) {
+              status = "fully_approved"
+            } else if (approved) {
+              status = "admin_approved"
+            } else if (multiSignAppID > 0) {
+              status = "mentor_approved"
+            }
+
             fetchedUsers.push({
               address: userAddress,
+              approved: approved,
               description: userDescription,
-              status: "fully_approved", // Since they're already in the contract
-              adminSignature: "existing_approval",
-              mentorSignature: "existing_approval",
+              multiSignAppID: multiSignAppID,
+              status: status,
+              adminSignature: approved ? "existing_approval" : undefined,
+              mentorSignature: multiSignAppID > 0 ? "existing_approval" : undefined,
             })
           }
         } else {
@@ -302,6 +336,99 @@ export default function ApproveDetailPage() {
     }
   }, [userRole, fetchBadgeData])
 
+  const handleAssignAppID = async (userAddress: string) => {
+    if (!activeAccount || !transactionSigner) {
+      toast.error("Please connect your wallet first.")
+      return
+    }
+
+    setIsCreatingMultisig(true)
+    toast.info("Creating Multisig App...", { autoClose: false, toastId: "multisig" })
+
+    try {
+      const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+
+      // Configuration for multisig
+      const addresses = [MASTER_ADDRESS, ADMIN_ADDRESS]
+      const signaturesRequired = 2
+
+      // Generate the multisig address
+      const msig_addr = algosdk.multisigAddress({
+        version: 1,
+        threshold: Number(signaturesRequired),
+        addrs: addresses,
+      })
+      console.log("msig_addr", msig_addr)
+
+      // Initialize the Multisig App Client
+      const appClient = new MsigAppClient(
+        {
+          resolveBy: "id",
+          id: 0,
+        },
+        algodClient,
+      )
+
+      toast.update("multisig", { render: "Deploying Multisig Contract..." })
+
+      // Deploy the contract
+      const deployment = await appClient.create.deploy(
+        {
+          admin: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ",
+        },
+        {
+          sender: {
+            signer: transactionSigner,
+            addr: activeAccount.address,
+          },
+        },
+      )
+      const app_id = deployment.appId
+
+      toast.update("multisig", { render: "Setting up Multisig Contract..." })
+
+      // Set up the Multisig contract
+      const setup = await appClient.arc55Setup(
+        {
+          threshold: Number(signaturesRequired),
+          addresses: addresses,
+        },
+        {
+          sender: {
+            addr: activeAccount.address,
+            signer: transactionSigner,
+          },
+        },
+      )
+
+      console.log("Generated App ID:", app_id)
+
+      toast.update("multisig", {
+        render: `Multisig App created successfully! App ID: ${app_id}`,
+        type: "success",
+        autoClose: 5000,
+      })
+
+      // Update the user's multisig app ID in the local state
+      setRegisteredUsers((prev) =>
+        prev.map((user) =>
+          user.address === userAddress ? { ...user, multiSignAppID: Number(app_id), status: "mentor_approved" } : user,
+        ),
+      )
+
+      console.log(`Assigned App ID ${app_id} to user ${userAddress}`)
+    } catch (error: any) {
+      console.error("Error creating multisig app:", error)
+      toast.update("multisig", {
+        render: `Failed to create multisig app: ${error.message || "Unknown error"}`,
+        type: "error",
+        autoClose: 5000,
+      })
+    } finally {
+      setIsCreatingMultisig(false)
+    }
+  }
+
   const handleApprove = async (userAddress: string, role: "admin" | "mentor") => {
     try {
       // In a real app, this would make an API call to update the approval status
@@ -312,10 +439,11 @@ export default function ApproveDetailPage() {
           if (user.address === userAddress) {
             const updated = { ...user }
             if (role === "admin") {
-              updated.status = updated.status === "mentor_approved" ? "fully_approved" : "admin_approved"
+              updated.approved = true
+              updated.status = updated.multiSignAppID > 0 ? "fully_approved" : "admin_approved"
               updated.adminSignature = `admin_sig_${Date.now()}`
             } else if (role === "mentor") {
-              updated.status = updated.status === "admin_approved" ? "fully_approved" : "mentor_approved"
+              updated.status = updated.approved ? "fully_approved" : "mentor_approved"
               updated.mentorSignature = `mentor_sig_${Date.now()}`
             }
             return updated
@@ -385,9 +513,9 @@ export default function ApproveDetailPage() {
 
   const canUserApprove = (user: RegisteredUser, role: "admin" | "mentor") => {
     if (role === "admin") {
-      return !user.adminSignature || user.adminSignature === "existing_approval"
+      return !user.approved
     } else if (role === "mentor") {
-      return !user.mentorSignature || user.mentorSignature === "existing_approval"
+      return user.multiSignAppID === 0
     }
     return false
   }
@@ -564,73 +692,102 @@ export default function ApproveDetailPage() {
         </CardHeader>
         <CardContent>
           {registeredUsers.length > 0 ? (
-            <div className="space-y-4">
-              {registeredUsers.map((user, index) => (
-                <Card key={index} className="border-l-4 border-l-primary">
-                  <CardHeader className="pb-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                      <div>
-                        <CardTitle className="text-base font-mono">
-                          {user.address.substring(0, 12)}...{user.address.substring(user.address.length - 12)}
-                        </CardTitle>
-                        <CardDescription className="text-sm">
-                          <a
-                            href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:underline text-primary"
-                          >
-                            View on Explorer
-                          </a>
-                        </CardDescription>
-                      </div>
-                      {getStatusBadge(user.status)}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div>
-                      <h4 className="font-semibold text-sm mb-2">Description / Email</h4>
-                      <p className="text-sm text-muted-foreground bg-muted/50 p-3 rounded break-all">
-                        {user.description}
-                      </p>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t">
-                      {canUserApprove(user, userRole!) && user.status !== "rejected" && (
-                        <Button onClick={() => handleApprove(user.address, userRole!)} className="flex-1">
-                          <CheckCircleIcon className="mr-2 h-4 w-4" />
-                          {user.adminSignature === "existing_approval" || user.mentorSignature === "existing_approval"
-                            ? `Re-approve as ${userRole === "admin" ? "Admin" : "Mentor"}`
-                            : `Approve as ${userRole === "admin" ? "Admin" : "Mentor"}`}
-                        </Button>
-                      )}
-
-                      {user.status !== "rejected" && (
-                        <Button
-                          variant="destructive"
-                          onClick={() => handleReject(user.address)}
-                          className="flex-1 sm:flex-initial"
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-border">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      User Address
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Description / Email
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Approved
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      MultiSign App ID
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {registeredUsers.map((user, index) => (
+                    <tr key={index} className="hover:bg-muted/30">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-mono">
+                        <a
+                          href={`https://app.dappflow.org/explorer/account/${user.address}/transactions`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline text-primary"
                         >
-                          <XCircleIcon className="mr-2 h-4 w-4" />
-                          Reject
-                        </Button>
-                      )}
+                          {user.address.substring(0, 12)}...{user.address.substring(user.address.length - 12)}
+                        </a>
+                      </td>
+                      <td className="px-4 py-3 whitespace-normal text-sm text-muted-foreground break-all max-w-xs">
+                        {user.description}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">{getStatusBadge(user.status)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            user.approved ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {user.approved ? "Yes" : "No"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-muted-foreground">
+                        {user.multiSignAppID || "N/A"}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm">
+                        <div className="flex flex-col gap-2">
+                          {canUserApprove(user, userRole!) && user.status !== "rejected" && (
+                            <Button size="sm" onClick={() => handleApprove(user.address, userRole!)} className="w-full">
+                              <CheckCircleIcon className="mr-1 h-3 w-3" />
+                              {userRole === "admin" ? "Approve" : "Mentor Approve"}
+                            </Button>
+                          )}
 
-                      {!canUserApprove(user, userRole!) && user.status !== "rejected" && (
-                        <p className="text-sm text-muted-foreground self-center">
-                          {user.status === "fully_approved" && "User is fully approved"}
-                          {user.status === "admin_approved" &&
-                            userRole === "admin" &&
-                            "You have already approved this user"}
-                          {user.status === "mentor_approved" &&
-                            userRole === "mentor" &&
-                            "You have already approved this user"}
-                        </p>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                          {userRole === "admin" && user.multiSignAppID === 0 && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleAssignAppID(user.address)}
+                              disabled={isCreatingMultisig}
+                              className="w-full"
+                            >
+                              {isCreatingMultisig ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <Settings className="mr-1 h-3 w-3" />
+                              )}
+                              AssignAppID
+                            </Button>
+                          )}
+
+                          {user.status !== "rejected" && (
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => handleReject(user.address)}
+                              className="w-full"
+                            >
+                              <XCircleIcon className="mr-1 h-3 w-3" />
+                              Reject
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground text-center py-4">

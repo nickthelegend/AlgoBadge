@@ -24,7 +24,6 @@ import {
   FileText,
 } from "lucide-react"
 import { toast } from "react-toastify"
-import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -44,7 +43,9 @@ interface BadgeDetails {
 
 interface RegisteredUser {
   address: string
-  description: string // Email or other description
+  approved: boolean
+  description: string // desc field
+  multiSignAppID: number // multiSignAppID field
 }
 
 export default function BadgeDetailPage() {
@@ -106,7 +107,7 @@ export default function BadgeDetailPage() {
 
     try {
       const indexerClient = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT)
-      const abiTypeString = algosdk.ABIType.from("(string)")
+      const abiTypeString = algosdk.ABIType.from("(bool,string,uint64)")
       const abiTypeUint64 = algosdk.ABIType.from("(uint64)")
 
       let fetchedBadgeName = `Badge ID: ${badgeAppId}` // Default name
@@ -184,7 +185,9 @@ export default function BadgeDetailPage() {
               setUserAlreadyRegistered(true)
             }
 
+            let approved = false
             let userDescription = "[No description]"
+            let multiSignAppID = 0
             try {
               const userBoxValueResponse = await indexerClient
                 .lookupApplicationBoxByIDandName(Number(badgeAppId), box.name)
@@ -198,19 +201,33 @@ export default function BadgeDetailPage() {
               }
 
               try {
-                const [decodedDesc] = abiTypeString.decode(userValueBytes) as [string]
+                const [decodedApproved, decodedDesc, decodedMultiSignAppID] = abiTypeString.decode(userValueBytes) as [
+                  boolean,
+                  string,
+                  bigint,
+                ]
+                approved = decodedApproved
                 userDescription = decodedDesc
+                multiSignAppID = Number(decodedMultiSignAppID)
               } catch (abiError: any) {
-                if (abiError.message && abiError.message.includes("string length bytes do not match")) {
+                localErrors.push(`ABI decoding error for user ${userAddress}: ${abiError.message}`)
+                // Fallback to try reading as string for backward compatibility
+                try {
                   userDescription = Buffer.from(userValueBytes).toString("utf-8")
-                } else {
-                  localErrors.push(`ABI decoding error for user ${userAddress} description: ${abiError.message}`)
+                } catch {
+                  // Keep default values
                 }
               }
             } catch (e: any) {
-              localErrors.push(`Error fetching description for user ${userAddress}: ${e.message}`)
+              localErrors.push(`Error fetching data for user ${userAddress}: ${e.message}`)
             }
-            fetchedUsers.push({ address: userAddress, description: userDescription })
+
+            fetchedUsers.push({
+              address: userAddress,
+              approved: approved,
+              description: userDescription,
+              multiSignAppID: multiSignAppID,
+            })
           }
         } else {
           localErrors.push("No registered users (boxes) found for this badge.")
@@ -263,18 +280,18 @@ export default function BadgeDetailPage() {
             .getMethodByName(
               [
                 new algosdk.ABIMethod({
-                  name: "registerBadge",
+                  name: "registerEvent",
                   desc: "",
                   args: [{ type: "string", name: "email", desc: "" }],
                   returns: { type: "void", desc: "" },
                 }),
               ],
-              "registerBadge",
+              "registerEvent",
             )
             .getSelector(),
           new algosdk.ABIStringType().encode(applicationDescription.trim()),
         ],
-        suggestedParams: { ...suggestedParams,fee:30000 },
+        suggestedParams: { ...suggestedParams },
         boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
         foreignAssets: [badgeDetails.assetId],
       })
@@ -286,7 +303,6 @@ export default function BadgeDetailPage() {
         assetIndex: badgeDetails.assetId,
         amount: 0,
         suggestedParams,
-        
       })
 
       // Group the transactions
@@ -552,6 +568,12 @@ export default function BadgeDetailPage() {
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                       Description / Email
                     </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      MultiSign App ID
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -574,6 +596,18 @@ export default function BadgeDetailPage() {
                       </td>
                       <td className="px-4 py-3 whitespace-normal text-sm text-muted-foreground break-all">
                         {user.description}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            user.approved ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"
+                          }`}
+                        >
+                          {user.approved ? "Approved" : "Pending"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-muted-foreground">
+                        {user.multiSignAppID || "N/A"}
                       </td>
                     </tr>
                   ))}

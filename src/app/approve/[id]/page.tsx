@@ -836,8 +836,21 @@ export default function ApproveDetailPage() {
 
   const canUserApprove = (user: RegisteredUser, role: "admin" | "mentor") => {
     if (role === "admin") {
-      return user.status !== "fully_approved" && user.status !== "admin_approved"
+      // Admin can approve if:
+      // 1. Not fully approved AND
+      // 2. Either no multisig app (first approval) OR status is admin_approved with 1/2 signatures (master approval)
+      if (user.status === "fully_approved") return false
+
+      // If there's a multisig app and status is admin_approved, check if master needs to approve
+      if (user.multiSignAppID > 0 && user.status === "admin_approved") {
+        // Master can approve if there's only 1/2 signatures
+        return (user.multisigBoxCount || 0) === 1
+      }
+
+      // Regular admin approval (first approval or no multisig yet)
+      return user.status !== "admin_approved"
     } else if (role === "mentor") {
+      // Mentor can approve if no multisig app assigned yet
       return user.multiSignAppID === 0
     }
     return false
@@ -1095,7 +1108,11 @@ export default function ApproveDetailPage() {
                               ) : (
                                 <CheckCircleIcon className="mr-1 h-3 w-3" />
                               )}
-                              {userRole === "admin" ? "Approve" : "Mentor Approve"}
+                              {userRole === "admin"
+                                ? user.status === "admin_approved" && user.multiSignAppID > 0
+                                  ? "Master Approve"
+                                  : "Approve"
+                                : "Mentor Approve"}
                               {user.multiSignAppID > 0 && " (Multisig)"}
                             </Button>
                           )}

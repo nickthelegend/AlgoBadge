@@ -24,6 +24,7 @@ import {
   ListChecks,
   AwardIcon,
   Settings,
+  SendIcon,
 } from "lucide-react"
 import { toast } from "react-toastify"
 import { AlgorandClient } from "@algorandfoundation/algokit-utils"
@@ -70,6 +71,7 @@ interface RegisteredUser {
   status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
   adminSignature?: string
   mentorSignature?: string
+  pendingTransactionGroup?: number // Store the transaction group ID for broadcasting
 }
 
 // Helper functions for multisig operations
@@ -103,6 +105,99 @@ const fetchMultisigBoxCount = async (multisigAppId: number): Promise<number> => 
   }
 }
 
+const getMultisigTransactionDetails = async (multisigAppId: number, groupId: number) => {
+  try {
+    const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+    const appClient = new MsigAppClient(
+      {
+        resolveBy: "id",
+        id: multisigAppId,
+      },
+      algodClient,
+    )
+
+    console.log(`Fetching transaction details for multisig app ${multisigAppId}, group ${groupId}`)
+
+    // Get transaction bytes
+    const key = combineUint64AndUint8(groupId, 0)
+    const txnBytes = await appClient.appClient.getBoxValue(key)
+    const txn = algosdk.decodeUnsignedTransaction(txnBytes)
+    console.log("Transaction decoded:", txn.txID())
+
+    // Get global state to get addresses and threshold
+    const global = await appClient.getGlobalState()
+    let threshold = 2
+    if (global.arc55_threshold) {
+      threshold = global.arc55_threshold.asNumber()
+    }
+
+    // Get addresses from global state
+    const rawGlobal = await appClient.appClient.getGlobalState()
+    const addresses: { index: number; address: string }[] = []
+    Object.keys(rawGlobal).forEach((key) => {
+      const val = rawGlobal[key]
+      if (val.keyRaw.length === 8) {
+        addresses.push({
+          index: Number(algosdk.bytesToBigInt(val.keyRaw)),
+          address: "valueRaw" in val ? algosdk.encodeAddress(val.valueRaw) : "",
+        })
+      }
+    })
+
+    console.log("Addresses found:", addresses)
+
+    // Get signatures for each address
+    const signatures: {
+      index: number
+      address: string
+      sign: Uint8Array | undefined
+    }[] = []
+
+    for (let j = 0; j < addresses.length; j++) {
+      const sigKey = combineAddressAndUint64(addresses[j].address, groupId)
+      console.log(`Checking signature for ${addresses[j].address} with group ${groupId}`)
+
+      try {
+        const sign = (await appClient.appClient.getBoxValueFromABIType(
+          sigKey,
+          algosdk.ABIType.from("byte[64][]"),
+        )) as Uint8Array[]
+
+        console.log(`Found signature for ${addresses[j].address}:`, sign[0] ? "YES" : "NO")
+        signatures.push({
+          index: addresses[j].index,
+          address: addresses[j].address,
+          sign: sign[0],
+        })
+      } catch (e: any) {
+        console.log(`No signature found for ${addresses[j].address}:`, e.message)
+        signatures.push({
+          index: addresses[j].index,
+          address: addresses[j].address,
+          sign: undefined,
+        })
+      }
+    }
+
+    const signedCount = signatures.filter((sig) => sig.sign).length
+    console.log(`Signatures found: ${signedCount}/${threshold}`)
+    console.log(
+      "Signature details:",
+      signatures.map((s) => ({ address: s.address, hasSig: !!s.sign })),
+    )
+
+    return {
+      txn,
+      addresses,
+      signatures,
+      threshold,
+    }
+  } catch (error) {
+    console.error("Error getting multisig transaction details:", error)
+    return null
+  }
+}
+
 export default function ApproveDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -116,6 +211,7 @@ export default function ApproveDetailPage() {
   const [userRole, setUserRole] = useState<"admin" | "mentor" | "unauthorized" | null>(null)
   const [isCreatingMultisig, setIsCreatingMultisig] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
+  const [isBroadcasting, setIsBroadcasting] = useState(false)
 
   // Check user authorization
   useEffect(() => {
@@ -385,6 +481,7 @@ export default function ApproveDetailPage() {
               status: status,
               adminSignature: undefined,
               mentorSignature: multiSignAppID > 0 ? "existing_approval" : undefined,
+              pendingTransactionGroup: undefined, // Will be set when transaction is created
             }
 
             console.log("Final user data:", userData)
@@ -709,17 +806,20 @@ export default function ApproveDetailPage() {
           autoClose: 5000,
         })
 
-        // Update the user's status in local state
         setRegisteredUsers((prev) =>
           prev.map((u) => {
             if (u.address === userAddress) {
               const updated = { ...u }
               if (role === "admin") {
-                updated.status = "fully_approved"
+                updated.status = "admin_approved"
                 updated.adminSignature = `multisig_approval_${Date.now()}`
+                updated.pendingTransactionGroup = newGroupId
+                // Update multisig box count to reflect the new signature
+                updated.multisigBoxCount = (updated.multisigBoxCount || 0) + 1
               } else if (role === "mentor") {
                 updated.status = "mentor_approved"
                 updated.mentorSignature = `multisig_approval_${Date.now()}`
+                updated.pendingTransactionGroup = newGroupId
               }
               return updated
             }
@@ -764,6 +864,111 @@ export default function ApproveDetailPage() {
         console.error(`Error approving user:`, e)
         toast.error(`Failed to approve user: ${e.message}`)
       }
+    }
+    // Refresh signature count after a short delay
+    setTimeout(() => {
+      refreshUserSignatureCount(userAddress)
+    }, 2000)
+  }
+
+  const handleBroadcastTransaction = async (userAddress: string) => {
+    if (!activeAccount || !transactionSigner) {
+      toast.error("Please connect your wallet first.")
+      return
+    }
+
+    const user = registeredUsers.find((u) => u.address === userAddress)
+    if (!user || !user.multiSignAppID || !user.pendingTransactionGroup) {
+      toast.error("User not found or no pending transaction to broadcast.")
+      return
+    }
+
+    setIsBroadcasting(true)
+    toast.info("Broadcasting multisig transaction...", { autoClose: false, toastId: "broadcasting" })
+
+    try {
+      const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+
+      // Get transaction details
+      const txnDetails = await getMultisigTransactionDetails(user.multiSignAppID, user.pendingTransactionGroup)
+      if (!txnDetails) {
+        throw new Error("Could not fetch transaction details")
+      }
+
+      const { txn, addresses, signatures, threshold } = txnDetails
+
+      // Check if threshold is reached
+      const signedCount = signatures.filter((sign) => sign.sign).length
+      if (signedCount < threshold) {
+        throw new Error(`Threshold not reached. Need ${threshold} signatures, have ${signedCount}`)
+      }
+
+      toast.update("broadcasting", { render: "Assembling multisig transaction..." })
+
+      // Create multisig transaction
+      const orderedAddresses = addresses.sort((a, b) => a.index - b.index)
+      const onlyAddresses = orderedAddresses.map((a) => a.address)
+
+      let msigTxn = algosdk.createMultisigTransaction(txn, {
+        version: 1,
+        threshold: threshold,
+        addrs: onlyAddresses,
+      })
+
+      // Append signatures in order
+      const orderedSignatures = signatures.sort((a, b) => a.index - b.index)
+      orderedSignatures.forEach((sign) => {
+        if (sign.sign) {
+          const { txID, blob } = algosdk.appendSignRawMultisigSignature(
+            msigTxn,
+            { version: 1, threshold: threshold, addrs: onlyAddresses },
+            sign.address,
+            new Uint8Array(sign.sign!),
+          )
+          console.log("Appended signature for:", sign.address, "txID:", txID)
+          msigTxn = blob
+        }
+      })
+
+      toast.update("broadcasting", { render: "Sending transaction to network..." })
+
+      // Broadcast the transaction
+      const broadcast = await algodClient.sendRawTransaction(msigTxn).do()
+      console.log("Broadcast result:", broadcast)
+
+      // Wait for confirmation
+      const res = await algosdk.waitForConfirmation(algodClient, txn.txID(), 3)
+      console.log("Transaction confirmed:", res)
+
+      toast.update("broadcasting", {
+        render: "Transaction broadcasted successfully!",
+        type: "success",
+        autoClose: 5000,
+      })
+
+      // Update user status to indicate transaction was broadcasted
+      setRegisteredUsers((prev) =>
+        prev.map((u) =>
+          u.address === userAddress
+            ? {
+                ...u,
+                status: "fully_approved",
+                pendingTransactionGroup: undefined, // Clear pending transaction
+              }
+            : u,
+        ),
+      )
+
+      console.log(`Transaction broadcasted for user ${userAddress}: ${txn.txID()}`)
+    } catch (error: any) {
+      console.error("Error broadcasting transaction:", error)
+      toast.update("broadcasting", {
+        render: `Failed to broadcast transaction: ${error.message || "Unknown error"}`,
+        type: "error",
+        autoClose: 5000,
+      })
+    } finally {
+      setIsBroadcasting(false)
     }
   }
 
@@ -818,7 +1023,11 @@ export default function ApproveDetailPage() {
               Fully Approved
             </Badge>
             {user?.multiSignAppID && (
-              <span className="text-xs text-green-600">All signatures complete ({user.multisigBoxCount || 0}/2)</span>
+              <span className="text-xs text-green-600">
+                {user.pendingTransactionGroup
+                  ? `Ready to broadcast (${user.multisigBoxCount || 0}/2)`
+                  : `All signatures complete (${user.multisigBoxCount || 0}/2)`}
+              </span>
             )}
           </div>
         )
@@ -854,6 +1063,24 @@ export default function ApproveDetailPage() {
       return user.multiSignAppID === 0
     }
     return false
+  }
+
+  const canBroadcastTransaction = (user: RegisteredUser) => {
+    return user.multiSignAppID > 0 && user.pendingTransactionGroup !== undefined
+  }
+
+  const refreshUserSignatureCount = async (userAddress: string) => {
+    const user = registeredUsers.find((u) => u.address === userAddress)
+    if (!user || !user.multiSignAppID) return
+
+    try {
+      const newBoxCount = await fetchMultisigBoxCount(user.multiSignAppID)
+      setRegisteredUsers((prev) =>
+        prev.map((u) => (u.address === userAddress ? { ...u, multisigBoxCount: newBoxCount } : u)),
+      )
+    } catch (error) {
+      console.error("Error refreshing signature count:", error)
+    }
   }
 
   // Show connection prompt if not connected
@@ -1131,6 +1358,23 @@ export default function ApproveDetailPage() {
                                 <Settings className="mr-1 h-3 w-3" />
                               )}
                               AssignAppID
+                            </Button>
+                          )}
+
+                          {canBroadcastTransaction(user) && (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => handleBroadcastTransaction(user.address)}
+                              disabled={isBroadcasting}
+                              className="w-full bg-green-600 hover:bg-green-700"
+                            >
+                              {isBroadcasting ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <SendIcon className="mr-1 h-3 w-3" />
+                              )}
+                              Broadcast Transaction
                             </Button>
                           )}
 

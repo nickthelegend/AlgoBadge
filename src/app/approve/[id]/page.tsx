@@ -10,24 +10,11 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import PageTitleHeader from "@/components/page-title-header"
-import {
-  CheckCircleIcon,
-  XCircleIcon,
-  ClockIcon,
-  UserCheckIcon,
-  ShieldIcon,
-  Loader2,
-  AlertTriangle,
-  UsersIcon,
-  TagIcon,
-  ArrowLeftIcon,
-  ListChecks,
-  AwardIcon,
-  Settings,
-} from "lucide-react"
+import { CheckCircleIcon, XCircleIcon, ClockIcon, UserCheckIcon, ShieldIcon, Loader2, AlertTriangle, UsersIcon, TagIcon, ArrowLeftIcon, ListChecks, AwardIcon, Settings } from 'lucide-react'
 import { toast } from "react-toastify"
 import { AlgorandClient } from "@algorandfoundation/algokit-utils"
 import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
+import { BadgeContractClient } from "@/contracts/BadgeContractClient"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -56,14 +43,14 @@ interface BadgeDetails {
   id: string
   name: string
   assetId?: number
+  sigID?: number
   rawBoxNameInManager?: string // For debugging
 }
 
 interface RegisteredUser {
   address: string
-  approved: boolean
-  description: string // desc field
-  multiSignAppID: number // multiSignAppID field
+  description: string // desc field from (string,uint64) decoding
+  multiSignAppID: number // multiSignAppID field from (string,uint64) decoding
   status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
   adminSignature?: string
   mentorSignature?: string
@@ -130,21 +117,31 @@ export default function ApproveDetailPage() {
 
     try {
       const indexerClient = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT)
-      const abiTypeString = algosdk.ABIType.from("(bool,string,uint64)")
+      const abiTypeBadgeManager = algosdk.ABIType.from("(bool,string,uint64)") // For Badge Manager
+      const abiTypeUserData = algosdk.ABIType.from("(string,uint64)") // For user data
       const abiTypeUint64 = algosdk.ABIType.from("(uint64)")
 
       let fetchedBadgeName = `Badge ID: ${badgeAppId}` // Default name
+      let fetchedSigID: number | undefined = undefined
       let rawBoxNameInManagerForDebug: string | undefined = undefined
 
-      // 1. Fetch Badge Name from Badge Manager
+      console.log("=== STARTING BADGE DATA FETCH ===")
+      console.log("Badge App ID:", badgeAppId)
+
+      // 1. Fetch Badge Name and SigID from Badge Manager
       try {
-        // The box name in Badge Manager is the uint64 encoded App ID of the badge
+        console.log("--- FETCHING FROM BADGE MANAGER ---")
         const badgeAppIdAsUint64Bytes = abiTypeUint64.encode(BigInt(badgeAppId))
         rawBoxNameInManagerForDebug = Buffer.from(badgeAppIdAsUint64Bytes).toString("base64")
+        
+        console.log("Badge Manager App ID:", BADGE_MANAGER_APP_ID)
+        console.log("Box name (base64):", rawBoxNameInManagerForDebug)
 
         const managerBoxValueResponse = await indexerClient
           .lookupApplicationBoxByIDandName(BADGE_MANAGER_APP_ID, badgeAppIdAsUint64Bytes)
           .do()
+
+        console.log("Manager box response:", managerBoxValueResponse)
 
         let managerValueBytes: Uint8Array
         if (typeof managerBoxValueResponse.value === "string") {
@@ -153,130 +150,130 @@ export default function ApproveDetailPage() {
           managerValueBytes = managerBoxValueResponse.value
         }
 
+        console.log("Manager value bytes length:", managerValueBytes.length)
+        console.log("Manager value bytes (hex):", Buffer.from(managerValueBytes).toString("hex"))
+
         try {
-          const [status,desc,sigID] = abiTypeString.decode(managerValueBytes) as [boolean,string,BigInt]
+          const [status, desc, sigID] = abiTypeBadgeManager.decode(managerValueBytes) as [boolean, string, bigint]
           fetchedBadgeName = desc
+          fetchedSigID = Number(sigID)
+          
+          console.log("BADGE MANAGER ABI DECODING SUCCESSFUL:")
+          console.log("- Status:", status)
+          console.log("- Description:", desc)
+          console.log("- SigID:", fetchedSigID)
         } catch (abiError: any) {
-          if (abiError.message && abiError.message.includes("string length bytes do not match")) {
+          console.error("Badge Manager ABI decoding failed:", abiError)
+          localErrors.push(`Badge Manager ABI decoding failed: ${abiError.message}`)
+          
+          // Fallback to string decoding
+          try {
             fetchedBadgeName = Buffer.from(managerValueBytes).toString("utf-8")
-          } else {
-            throw abiError // Re-throw other ABI errors
+            console.log("Fallback string decoding:", fetchedBadgeName)
+          } catch (fallbackError) {
+            console.error("Fallback string decoding also failed:", fallbackError)
           }
         }
       } catch (e: any) {
-        localErrors.push(`Could not fetch badge name from Badge Manager: ${e.message}`)
-        console.warn(`Could not fetch badge name for ${badgeAppId} from Badge Manager:`, e)
+        localErrors.push(`Could not fetch badge data from Badge Manager: ${e.message}`)
+        console.error("Badge Manager fetch error:", e)
       }
 
       // 2. Fetch Asset ID from the badge contract's global state
       let fetchedAssetId: number | undefined = undefined
       try {
+        console.log("--- FETCHING ASSET ID FROM BADGE CONTRACT ---")
         const appInfo = await indexerClient.lookupApplications(Number(badgeAppId)).do()
+        
         if (appInfo.application && appInfo.application.params && appInfo.application.params["global-state"]) {
           const globalState = appInfo.application.params["global-state"]
-          console.log("Global state for badge contract:", globalState) // Debug log
+          console.log("Badge contract global state:", globalState)
 
           const assetIdEntry = globalState.find((entry: any) => {
-            // Decode the key properly
             let keyStr: string
             if (typeof entry.key === "string") {
-              // entry.key is base64-encoded string
               keyStr = Buffer.from(entry.key, "base64").toString()
             } else {
-              // entry.key is Uint8Array
               keyStr = Buffer.from(entry.key).toString()
             }
-            console.log("Checking global state key:", keyStr) // Debug log
+            console.log("Checking global state key:", keyStr)
             return keyStr === "assetID"
           })
 
           if (assetIdEntry) {
-            console.log("Found assetID entry:", assetIdEntry) // Debug log
+            console.log("Found assetID entry:", assetIdEntry)
             if (assetIdEntry.value && assetIdEntry.value.uint !== undefined) {
               fetchedAssetId = Number(assetIdEntry.value.uint)
-              console.log("Decoded Asset ID:", fetchedAssetId)
-            } else if (assetIdEntry.value && assetIdEntry.value.bytes) {
-              // Sometimes asset ID might be stored as bytes, try to decode
-              const assetIdBytes =
-                typeof assetIdEntry.value.bytes === "string"
-                  ? Buffer.from(assetIdEntry.value.bytes, "base64")
-                  : Buffer.from(assetIdEntry.value.bytes)
-
-              if (assetIdBytes.length === 8) {
-                // Try to decode as uint64
-                try {
-                  const assetIdBigInt = algosdk.decodeUint64(assetIdBytes, "safe")
-                  fetchedAssetId = Number(assetIdBigInt)
-                  console.log("Decoded Asset ID from bytes:", fetchedAssetId)
-                } catch (decodeError) {
-                  localErrors.push(`Could not decode asset ID from bytes: ${decodeError}`)
-                }
-              } else {
-                localErrors.push(`Asset ID bytes length unexpected: ${assetIdBytes.length}`)
-              }
-            } else {
-              localErrors.push("assetID entry found but value format is unexpected.")
+              console.log("Asset ID decoded:", fetchedAssetId)
             }
           } else {
+            console.log("assetID key not found in global state")
             localErrors.push("assetID key not found in global state of badge contract.")
-            console.log(
-              "Available global state keys:",
-              globalState.map((entry: any) => {
-                const keyStr =
-                  typeof entry.key === "string"
-                    ? Buffer.from(entry.key, "base64").toString()
-                    : Buffer.from(entry.key).toString()
-                return keyStr
-              }),
-            )
           }
-        } else {
-          localErrors.push("Could not retrieve global state for badge contract.")
         }
       } catch (e: any) {
-        localErrors.push(`Error fetching asset ID from global state: ${e.message}`)
-        console.error(`Error fetching asset ID for ${badgeAppId}:`, e)
+        localErrors.push(`Error fetching asset ID: ${e.message}`)
+        console.error("Asset ID fetch error:", e)
       }
 
       setBadgeDetails({
         id: badgeAppId,
         name: fetchedBadgeName,
         assetId: fetchedAssetId,
+        sigID: fetchedSigID,
         rawBoxNameInManager: rawBoxNameInManagerForDebug,
       })
 
-      // 3. Fetch Registered Users from the badge contract's boxes
+      // 3. Fetch ALL boxes and decode user data with (string,uint64) ABI type
+      console.log("--- FETCHING USER BOXES FROM BADGE CONTRACT ---")
       const fetchedUsers: RegisteredUser[] = []
+      
       try {
         const userBoxesResponse = await indexerClient.searchForApplicationBoxes(Number(badgeAppId)).do()
+        console.log("User boxes response:", userBoxesResponse)
+        
         if (userBoxesResponse.boxes && userBoxesResponse.boxes.length > 0) {
-          for (const box of userBoxesResponse.boxes) {
-            if (!box.name) continue
-
-            let userAddress = ""
-            try {
-              // Box name is expected to be raw public key bytes (32 bytes)
-              if (box.name.length === 32) {
-                userAddress = algosdk.encodeAddress(box.name)
-              } else {
-                // If not 32 bytes, it might be something else or an error in contract logic
-                localErrors.push(`Box name for user is not 32 bytes: ${Buffer.from(box.name).toString("base64")}`)
-                userAddress = `[Invalid Address Format: ${Buffer.from(box.name).toString("base64")}]`
-              }
-            } catch (addrError: any) {
-              localErrors.push(
-                `Could not decode user address from box name ${Buffer.from(box.name).toString("base64")}: ${addrError.message}`,
-              )
+          console.log(`Found ${userBoxesResponse.boxes.length} boxes`)
+          
+          for (let i = 0; i < userBoxesResponse.boxes.length; i++) {
+            const box = userBoxesResponse.boxes[i]
+            console.log(`\n--- PROCESSING BOX ${i + 1}/${userBoxesResponse.boxes.length} ---`)
+            
+            if (!box.name) {
+              console.log("Box has no name, skipping")
               continue
             }
 
-            let approved = false
+            // Decode user address from box name
+            let userAddress = ""
+            try {
+              if (box.name.length === 32) {
+                userAddress = algosdk.encodeAddress(box.name)
+                console.log("User address decoded:", userAddress)
+              } else {
+                const boxNameBase64 = Buffer.from(box.name).toString("base64")
+                console.log("Invalid box name length:", box.name.length, "base64:", boxNameBase64)
+                localErrors.push(`Box name for user is not 32 bytes: ${boxNameBase64}`)
+                userAddress = `[Invalid Address Format: ${boxNameBase64}]`
+              }
+            } catch (addrError: any) {
+              const boxNameBase64 = Buffer.from(box.name).toString("base64")
+              console.error("Address decoding error:", addrError)
+              localErrors.push(`Could not decode user address from box name ${boxNameBase64}: ${addrError.message}`)
+              continue
+            }
+
+            // Fetch and decode box value
             let userDescription = "[No description]"
             let multiSignAppID = 0
+            
             try {
+              console.log("Fetching box value for user:", userAddress)
               const userBoxValueResponse = await indexerClient
                 .lookupApplicationBoxByIDandName(Number(badgeAppId), box.name)
                 .do()
+
+              console.log("User box value response:", userBoxValueResponse)
 
               let userValueBytes: Uint8Array
               if (typeof userBoxValueResponse.value === "string") {
@@ -285,62 +282,77 @@ export default function ApproveDetailPage() {
                 userValueBytes = userBoxValueResponse.value
               }
 
+              console.log("User value bytes length:", userValueBytes.length)
+              console.log("User value bytes (hex):", Buffer.from(userValueBytes).toString("hex"))
+
+              // Decode with (string,uint64) ABI type
               try {
-                const [decodedApproved, decodedDesc, decodedMultiSignAppID] = abiTypeString.decode(userValueBytes) as [
-                  boolean,
-                  string,
-                  bigint,
-                ]
-                approved = decodedApproved
+                const [decodedDesc, decodedMultiSignAppID] = abiTypeUserData.decode(userValueBytes) as [string, bigint]
                 userDescription = decodedDesc
                 multiSignAppID = Number(decodedMultiSignAppID)
+                
+                console.log("USER DATA ABI DECODING SUCCESSFUL:")
+                console.log("- Description:", userDescription)
+                console.log("- MultiSign App ID:", multiSignAppID)
               } catch (abiError: any) {
+                console.error("User data ABI decoding failed:", abiError)
                 localErrors.push(`ABI decoding error for user ${userAddress}: ${abiError.message}`)
-                // Fallback to try reading as string for backward compatibility
+                
+                // Fallback to string decoding
                 try {
                   userDescription = Buffer.from(userValueBytes).toString("utf-8")
-                } catch {
-                  // Keep default values
+                  console.log("Fallback string decoding for user:", userDescription)
+                } catch (fallbackError) {
+                  console.error("Fallback string decoding failed:", fallbackError)
                 }
               }
             } catch (e: any) {
-              localErrors.push(`Error fetching description for user ${userAddress}: ${e.message}`)
+              console.error("Error fetching box value for user:", userAddress, e)
+              localErrors.push(`Error fetching data for user ${userAddress}: ${e.message}`)
             }
 
-            // Determine status based on approval and multisig app ID
+            // Determine status based on multiSignAppID
             let status: RegisteredUser["status"] = "pending"
-            if (approved && multiSignAppID > 0) {
-              status = "fully_approved"
-            } else if (approved) {
-              status = "admin_approved"
-            } else if (multiSignAppID > 0) {
-              status = "mentor_approved"
+            if (multiSignAppID > 0) {
+              status = "mentor_approved" // Has multisig app assigned
             }
 
-            fetchedUsers.push({
+            const userData: RegisteredUser = {
               address: userAddress,
-              approved: approved,
               description: userDescription,
               multiSignAppID: multiSignAppID,
               status: status,
-              adminSignature: approved ? "existing_approval" : undefined,
+              adminSignature: undefined,
               mentorSignature: multiSignAppID > 0 ? "existing_approval" : undefined,
-            })
+            }
+
+            console.log("Final user data:", userData)
+            fetchedUsers.push(userData)
           }
         } else {
+          console.log("No boxes found for this badge")
           localErrors.push("No registered users (boxes) found for this badge.")
         }
+        
+        console.log(`\n=== FINAL RESULTS ===`)
+        console.log(`Total users processed: ${fetchedUsers.length}`)
         setRegisteredUsers(fetchedUsers)
       } catch (e: any) {
         localErrors.push(`Error fetching registered users: ${e.message}`)
-        console.error(`Error fetching registered users for ${badgeAppId}:`, e)
+        console.error("User boxes fetch error:", e)
       }
 
       if (localErrors.length > 0) {
-        setError(localErrors.join("; ")) // Concatenate errors or handle them more gracefully
+        console.log("=== ERRORS ENCOUNTERED ===")
+        localErrors.forEach((error, index) => {
+          console.log(`${index + 1}. ${error}`)
+        })
+        setError(localErrors.join("; "))
       }
+
+      console.log("=== BADGE DATA FETCH COMPLETE ===")
     } catch (e: any) {
-      console.error("Overall fetch error for badge details:", e)
+      console.error("Overall fetch error:", e)
       setError(`Failed to load badge details: ${e.message}`)
     } finally {
       setIsLoading(false)
@@ -426,30 +438,7 @@ export default function ApproveDetailPage() {
         return
       }
       console.log("Generated App ID:", app_id)
-      const txn = algosdk.makeApplicationNoOpTxnFromObject({
-        sender: activeAddress,
-        appIndex: Number(badgeAppId),
-        appArgs: [
-          algosdk
-            .getMethodByName(
-              [
-                new algosdk.ABIMethod({
-                  name: "assignAppID",
-                  desc: "",
-                  args: [{ type: "uint64", name: "appID", desc: "" }],
-                  returns: { type: "void", desc: "" },
-                }),
-              ],
-              "assignAppID",
-            )
-            .getSelector(),
-        ],
-        suggestedParams: { ...suggestedParams },
-        boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
-      })
-
-      const txns = [ txn]
-      algosdk.assignGroupID(txns)
+      
 
       toast.update("applying", { render: "Signing transactions..." })
       const algorand = AlgorandClient.fromConfig({
@@ -465,6 +454,29 @@ export default function ApproveDetailPage() {
         },
       })
 
+      const newBadgeContract = algorand.client.getTypedAppClientById(BadgeContractClient, {
+        appId: BigInt(badgeAppId),
+        defaultSender: activeAddress,
+        defaultSigner: transactionSigner,
+      })
+      await algorand
+      .newGroup()
+      .addAppCallMethodCall(
+        await newBadgeContract.params.assignAppId({
+          args: { 
+            
+            appId: BigInt(app_id)
+
+          
+            
+          },
+          // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
+        }),
+      )
+      .send({ populateAppCallResources: true })
+
+
+
      await algorand.newGroup()
       .addPayment({
         sender: activeAddress,
@@ -474,7 +486,7 @@ export default function ApproveDetailPage() {
       })
       .send({ populateAppCallResources: true })
       // Sign both transactions
-      const signedTxns = await transactionSigner(txns, [0, 1])
+      // const signedTxns = await transactionSigner(txns, [0, 1])
 
       toast.update("applying", { render: "Sending transactions to network..." })
       toast.update("multisig", {
@@ -648,11 +660,10 @@ export default function ApproveDetailPage() {
             if (u.address === userAddress) {
               const updated = { ...u }
               if (role === "admin") {
-                updated.approved = true
                 updated.status = "fully_approved"
                 updated.adminSignature = `multisig_approval_${Date.now()}`
               } else if (role === "mentor") {
-                updated.status = updated.approved ? "fully_approved" : "mentor_approved"
+                updated.status = "mentor_approved"
                 updated.mentorSignature = `multisig_approval_${Date.now()}`
               }
               return updated
@@ -680,11 +691,10 @@ export default function ApproveDetailPage() {
             if (u.address === userAddress) {
               const updated = { ...u }
               if (role === "admin") {
-                updated.approved = true
-                updated.status = updated.multiSignAppID > 0 ? "fully_approved" : "admin_approved"
+                updated.status = "admin_approved"
                 updated.adminSignature = `admin_sig_${Date.now()}`
               } else if (role === "mentor") {
-                updated.status = updated.approved ? "fully_approved" : "mentor_approved"
+                updated.status = "mentor_approved"
                 updated.mentorSignature = `mentor_sig_${Date.now()}`
               }
               return updated
@@ -759,7 +769,7 @@ export default function ApproveDetailPage() {
 
   const canUserApprove = (user: RegisteredUser, role: "admin" | "mentor") => {
     if (role === "admin") {
-      return !user.approved
+      return user.status !== "fully_approved" && user.status !== "admin_approved"
     } else if (role === "mentor") {
       return user.multiSignAppID === 0
     }
@@ -825,7 +835,6 @@ export default function ApproveDetailPage() {
   }
 
   if (error && !badgeDetails) {
-    // Show critical error if badgeDetails couldn't even be partially loaded
     return (
       <div className="container mx-auto p-4">
         <Button variant="outline" onClick={() => router.push("/approve")} className="mb-4">
@@ -850,7 +859,6 @@ export default function ApproveDetailPage() {
   }
 
   if (!badgeDetails) {
-    // Should be covered by error state, but as a fallback
     return (
       <div className="container mx-auto p-4 text-center">
         <p>Badge not found or could not be loaded.</p>
@@ -873,7 +881,7 @@ export default function ApproveDetailPage() {
         subtitle={`Review and approve users for Badge App ID: ${badgeDetails.id} as ${userRole}`}
       />
 
-      {error && ( // Display non-critical errors (e.g., if some parts failed but main details loaded)
+      {error && (
         <Card className="mb-6 bg-amber-50 border-amber-300">
           <CardHeader>
             <CardTitle className="text-amber-700 text-lg flex items-center">
@@ -916,6 +924,20 @@ export default function ApproveDetailPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Signature ID</CardTitle>
+            <ShieldIcon className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {badgeDetails.sigID !== undefined ? (
+              <div className="text-2xl font-bold">{badgeDetails.sigID}</div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Not found or N/A</p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">From badge manager</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Registered Users</CardTitle>
             <UsersIcon className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
@@ -946,13 +968,10 @@ export default function ApproveDetailPage() {
                       User Address
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Description / Email
+                      Description
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                       Status
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Approved
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                       MultiSign App ID
@@ -979,17 +998,8 @@ export default function ApproveDetailPage() {
                         {user.description}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">{getStatusBadge(user.status)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            user.approved ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-                          }`}
-                        >
-                          {user.approved ? "Yes" : "No"}
-                        </span>
-                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-muted-foreground">
-                        {user.multiSignAppID || "N/A"}
+                        {user.multiSignAppID || "Not assigned"}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
                         <div className="flex flex-col gap-2">

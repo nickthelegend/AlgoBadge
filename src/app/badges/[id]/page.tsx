@@ -24,6 +24,8 @@ import {
   FileText,
 } from "lucide-react"
 import { toast } from "react-toastify"
+import { AlgorandClient } from "@algorandfoundation/algokit-utils"
+import { BadgeContractClient } from "@/contracts/BadgeContractClient"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -272,29 +274,40 @@ export default function BadgeDetailPage() {
       const suggestedParams = await algodClient.getTransactionParams().do()
 
       // Create the registerEvent transaction
-      const txn = algosdk.makeApplicationNoOpTxnFromObject({
-        sender: activeAddress,
-        appIndex: Number(badgeAppId),
-        appArgs: [
-          algosdk
-            .getMethodByName(
-              [
-                new algosdk.ABIMethod({
-                  name: "registerBadge",
-                  desc: "",
-                  args: [{ type: "string", name: "email", desc: "" }],
-                  returns: { type: "void", desc: "" },
-                }),
-              ],
-              "registerBadge",
-            )
-            .getSelector(),
-          new algosdk.ABIStringType().encode(applicationDescription.trim()),
-        ],
-        suggestedParams: { ...suggestedParams },
-        boxes: [{ appIndex: 0, name: algosdk.decodeAddress(activeAddress).publicKey }],
-        foreignAssets: [badgeDetails.assetId],
+      const algorand = AlgorandClient.fromConfig({
+        algodConfig: {
+          server: "https://testnet-api.algonode.cloud",
+          port: "",
+          token: "",
+        },
+        indexerConfig: {
+          server: "https://testnet-api.algonode.cloud", // Corrected: was algonode.cloud, should be idx for indexer
+          port: "",
+          token: "",
+        },
       })
+
+
+      const newBadgeContract = algorand.client.getTypedAppClientById(BadgeContractClient, {
+        appId: BigInt(badgeAppId),
+        defaultSender: activeAddress,
+        defaultSigner: transactionSigner,
+      })
+      await algorand
+      .newGroup()
+      .addAppCallMethodCall(
+        await newBadgeContract.params.registerBadge({
+          args: { details:{
+            desc:           applicationDescription,
+            appId: BigInt(0)
+
+          }
+            
+          },
+          // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
+        }),
+      )
+      .send({ populateAppCallResources: true })
 
       // Create the opt-in transaction
       const optInTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
@@ -306,7 +319,7 @@ export default function BadgeDetailPage() {
       })
 
       // Group the transactions
-      const txns = [optInTxn, txn]
+      const txns = [optInTxn]
       algosdk.assignGroupID(txns)
 
       toast.update("applying", { render: "Signing transactions..." })

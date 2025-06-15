@@ -29,6 +29,7 @@ const INDEXER_TOKEN = ""
 
 const ADMIN_ADDRESSES = [
   "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4", // Your admin address
+  "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q", // Additional admin address
   // Add more admin addresses as needed
 ]
 
@@ -53,18 +54,37 @@ export default function ApprovePage() {
 
   // Check user authorization
   useEffect(() => {
+    console.log("=== MAIN APPROVE AUTHORIZATION CHECK ===")
+    console.log("Active Address:", activeAddress)
+    console.log("Admin Addresses:", ADMIN_ADDRESSES)
+    console.log("Mentor Addresses:", MENTOR_ADDRESSES)
+
     if (!activeAddress) {
+      console.log("No active address, setting role to null")
       setUserRole(null)
       return
     }
 
-    if (ADMIN_ADDRESSES.includes(activeAddress)) {
+    console.log("Checking if address is in admin list...")
+    const isAdmin = ADMIN_ADDRESSES.includes(activeAddress)
+    console.log("Is Admin:", isAdmin)
+
+    console.log("Checking if address is in mentor list...")
+    const isMentor = MENTOR_ADDRESSES.includes(activeAddress)
+    console.log("Is Mentor:", isMentor)
+
+    if (isAdmin) {
+      console.log("Setting role to admin")
       setUserRole("admin")
-    } else if (MENTOR_ADDRESSES.includes(activeAddress)) {
+    } else if (isMentor) {
+      console.log("Setting role to mentor")
       setUserRole("mentor")
     } else {
+      console.log("Setting role to unauthorized")
       setUserRole("unauthorized")
     }
+
+    console.log("=== END MAIN APPROVE AUTHORIZATION CHECK ===")
   }, [activeAddress])
 
   // Load badges and their applications
@@ -334,7 +354,7 @@ export default function ApprovePage() {
                     </Button>
                     <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
                       <a
-                        href={`https://lora.algokit.io/testnet/application/${badge.id}/transactions`}
+                        href={`https://app.dappflow.org/explorer/application/${badge.id}/transactions`}
                         target="_blank"
                         rel="noopener noreferrer"
                         title="View on Explorer"

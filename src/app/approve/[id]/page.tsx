@@ -10,7 +10,21 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import PageTitleHeader from "@/components/page-title-header"
-import { CheckCircleIcon, XCircleIcon, ClockIcon, UserCheckIcon, ShieldIcon, Loader2, AlertTriangle, UsersIcon, TagIcon, ArrowLeftIcon, ListChecks, AwardIcon, Settings } from 'lucide-react'
+import {
+  CheckCircleIcon,
+  XCircleIcon,
+  ClockIcon,
+  UserCheckIcon,
+  ShieldIcon,
+  Loader2,
+  AlertTriangle,
+  UsersIcon,
+  TagIcon,
+  ArrowLeftIcon,
+  ListChecks,
+  AwardIcon,
+  Settings,
+} from "lucide-react"
 import { toast } from "react-toastify"
 import { AlgorandClient } from "@algorandfoundation/algokit-utils"
 import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
@@ -27,6 +41,7 @@ const ALGOD_TOKEN = ""
 
 const ADMIN_ADDRESSES = [
   "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4", // Your admin address
+  "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q", // Additional admin address
   // Add more admin addresses as needed
 ]
 
@@ -51,6 +66,7 @@ interface RegisteredUser {
   address: string
   description: string // desc field from (string,uint64) decoding
   multiSignAppID: number // multiSignAppID field from (string,uint64) decoding
+  multisigBoxCount?: number // Number of boxes in multisig app
   status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
   adminSignature?: string
   mentorSignature?: string
@@ -75,6 +91,18 @@ function combineAddressAndUint64(address: string, uint64: number) {
   return combinedbuffer
 }
 
+// Helper function to fetch multisig box count
+const fetchMultisigBoxCount = async (multisigAppId: number): Promise<number> => {
+  try {
+    const indexerClient = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT)
+    const boxesResponse = await indexerClient.searchForApplicationBoxes(multisigAppId).do()
+    return boxesResponse.boxes ? boxesResponse.boxes.length : 0
+  } catch (error) {
+    console.error(`Error fetching boxes for multisig app ${multisigAppId}:`, error)
+    return 0
+  }
+}
+
 export default function ApproveDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -91,18 +119,37 @@ export default function ApproveDetailPage() {
 
   // Check user authorization
   useEffect(() => {
+    console.log("=== AUTHORIZATION CHECK ===")
+    console.log("Active Address:", activeAddress)
+    console.log("Admin Addresses:", ADMIN_ADDRESSES)
+    console.log("Mentor Addresses:", MENTOR_ADDRESSES)
+
     if (!activeAddress) {
+      console.log("No active address, setting role to null")
       setUserRole(null)
       return
     }
 
-    if (ADMIN_ADDRESSES.includes(activeAddress)) {
+    console.log("Checking if address is in admin list...")
+    const isAdmin = ADMIN_ADDRESSES.includes(activeAddress)
+    console.log("Is Admin:", isAdmin)
+
+    console.log("Checking if address is in mentor list...")
+    const isMentor = MENTOR_ADDRESSES.includes(activeAddress)
+    console.log("Is Mentor:", isMentor)
+
+    if (isAdmin) {
+      console.log("Setting role to admin")
       setUserRole("admin")
-    } else if (MENTOR_ADDRESSES.includes(activeAddress)) {
+    } else if (isMentor) {
+      console.log("Setting role to mentor")
       setUserRole("mentor")
     } else {
+      console.log("Setting role to unauthorized")
       setUserRole("unauthorized")
     }
+
+    console.log("=== END AUTHORIZATION CHECK ===")
   }, [activeAddress])
 
   const fetchBadgeData = useCallback(async () => {
@@ -133,7 +180,7 @@ export default function ApproveDetailPage() {
         console.log("--- FETCHING FROM BADGE MANAGER ---")
         const badgeAppIdAsUint64Bytes = abiTypeUint64.encode(BigInt(badgeAppId))
         rawBoxNameInManagerForDebug = Buffer.from(badgeAppIdAsUint64Bytes).toString("base64")
-        
+
         console.log("Badge Manager App ID:", BADGE_MANAGER_APP_ID)
         console.log("Box name (base64):", rawBoxNameInManagerForDebug)
 
@@ -157,7 +204,7 @@ export default function ApproveDetailPage() {
           const [status, desc, sigID] = abiTypeBadgeManager.decode(managerValueBytes) as [boolean, string, bigint]
           fetchedBadgeName = desc
           fetchedSigID = Number(sigID)
-          
+
           console.log("BADGE MANAGER ABI DECODING SUCCESSFUL:")
           console.log("- Status:", status)
           console.log("- Description:", desc)
@@ -165,7 +212,7 @@ export default function ApproveDetailPage() {
         } catch (abiError: any) {
           console.error("Badge Manager ABI decoding failed:", abiError)
           localErrors.push(`Badge Manager ABI decoding failed: ${abiError.message}`)
-          
+
           // Fallback to string decoding
           try {
             fetchedBadgeName = Buffer.from(managerValueBytes).toString("utf-8")
@@ -184,7 +231,7 @@ export default function ApproveDetailPage() {
       try {
         console.log("--- FETCHING ASSET ID FROM BADGE CONTRACT ---")
         const appInfo = await indexerClient.lookupApplications(Number(badgeAppId)).do()
-        
+
         if (appInfo.application && appInfo.application.params && appInfo.application.params["global-state"]) {
           const globalState = appInfo.application.params["global-state"]
           console.log("Badge contract global state:", globalState)
@@ -227,18 +274,18 @@ export default function ApproveDetailPage() {
       // 3. Fetch ALL boxes and decode user data with (string,uint64) ABI type
       console.log("--- FETCHING USER BOXES FROM BADGE CONTRACT ---")
       const fetchedUsers: RegisteredUser[] = []
-      
+
       try {
         const userBoxesResponse = await indexerClient.searchForApplicationBoxes(Number(badgeAppId)).do()
         console.log("User boxes response:", userBoxesResponse)
-        
+
         if (userBoxesResponse.boxes && userBoxesResponse.boxes.length > 0) {
           console.log(`Found ${userBoxesResponse.boxes.length} boxes`)
-          
+
           for (let i = 0; i < userBoxesResponse.boxes.length; i++) {
             const box = userBoxesResponse.boxes[i]
             console.log(`\n--- PROCESSING BOX ${i + 1}/${userBoxesResponse.boxes.length} ---`)
-            
+
             if (!box.name) {
               console.log("Box has no name, skipping")
               continue
@@ -266,7 +313,7 @@ export default function ApproveDetailPage() {
             // Fetch and decode box value
             let userDescription = "[No description]"
             let multiSignAppID = 0
-            
+
             try {
               console.log("Fetching box value for user:", userAddress)
               const userBoxValueResponse = await indexerClient
@@ -290,14 +337,14 @@ export default function ApproveDetailPage() {
                 const [decodedDesc, decodedMultiSignAppID] = abiTypeUserData.decode(userValueBytes) as [string, bigint]
                 userDescription = decodedDesc
                 multiSignAppID = Number(decodedMultiSignAppID)
-                
+
                 console.log("USER DATA ABI DECODING SUCCESSFUL:")
                 console.log("- Description:", userDescription)
                 console.log("- MultiSign App ID:", multiSignAppID)
               } catch (abiError: any) {
                 console.error("User data ABI decoding failed:", abiError)
                 localErrors.push(`ABI decoding error for user ${userAddress}: ${abiError.message}`)
-                
+
                 // Fallback to string decoding
                 try {
                   userDescription = Buffer.from(userValueBytes).toString("utf-8")
@@ -311,16 +358,30 @@ export default function ApproveDetailPage() {
               localErrors.push(`Error fetching data for user ${userAddress}: ${e.message}`)
             }
 
-            // Determine status based on multiSignAppID
+            // Determine status based on multiSignAppID and fetch multisig box count
             let status: RegisteredUser["status"] = "pending"
+            let multisigBoxCount = 0
+
             if (multiSignAppID > 0) {
-              status = "mentor_approved" // Has multisig app assigned
+              console.log(`Fetching multisig box count for app ID: ${multiSignAppID}`)
+              multisigBoxCount = await fetchMultisigBoxCount(multiSignAppID)
+              console.log(`Multisig app ${multiSignAppID} has ${multisigBoxCount} boxes`)
+
+              // Determine status based on box count
+              if (multisigBoxCount >= 2) {
+                status = "fully_approved" // Both admin and master have signed
+              } else if (multisigBoxCount === 1) {
+                status = "admin_approved" // Only admin has signed, master yet to approve
+              } else {
+                status = "mentor_approved" // Multisig app assigned but no signatures yet
+              }
             }
 
             const userData: RegisteredUser = {
               address: userAddress,
               description: userDescription,
               multiSignAppID: multiSignAppID,
+              multisigBoxCount: multisigBoxCount,
               status: status,
               adminSignature: undefined,
               mentorSignature: multiSignAppID > 0 ? "existing_approval" : undefined,
@@ -333,7 +394,7 @@ export default function ApproveDetailPage() {
           console.log("No boxes found for this badge")
           localErrors.push("No registered users (boxes) found for this badge.")
         }
-        
+
         console.log(`\n=== FINAL RESULTS ===`)
         console.log(`Total users processed: ${fetchedUsers.length}`)
         setRegisteredUsers(fetchedUsers)
@@ -438,7 +499,6 @@ export default function ApproveDetailPage() {
         return
       }
       console.log("Generated App ID:", app_id)
-      
 
       toast.update("applying", { render: "Signing transactions..." })
       const algorand = AlgorandClient.fromConfig({
@@ -460,31 +520,26 @@ export default function ApproveDetailPage() {
         defaultSigner: transactionSigner,
       })
       await algorand
-      .newGroup()
-      .addAppCallMethodCall(
-        await newBadgeContract.params.assignAppId({
-          args: { 
-            
-            appId: BigInt(app_id)
+        .newGroup()
+        .addAppCallMethodCall(
+          await newBadgeContract.params.assignAppId({
+            args: {
+              appId: BigInt(app_id),
+            },
+            // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
+          }),
+        )
+        .send({ populateAppCallResources: true })
 
-          
-            
-          },
-          // Consider adding explicit fees if needed: , { fee: AlgoAmount.MicroAlgos(2000) }
-        }),
-      )
-      .send({ populateAppCallResources: true })
-
-
-
-     await algorand.newGroup()
-      .addPayment({
-        sender: activeAddress,
-        receiver: app_address,
-        amount: AlgoAmount.MicroAlgos(100_000),
-        signer: transactionSigner,
-      })
-      .send({ populateAppCallResources: true })
+      await algorand
+        .newGroup()
+        .addPayment({
+          sender: activeAddress,
+          receiver: app_address,
+          amount: AlgoAmount.MicroAlgos(100_000),
+          signer: transactionSigner,
+        })
+        .send({ populateAppCallResources: true })
       // Sign both transactions
       // const signedTxns = await transactionSigner(txns, [0, 1])
 
@@ -725,7 +780,7 @@ export default function ApproveDetailPage() {
     }
   }
 
-  const getStatusBadge = (status: RegisteredUser["status"]) => {
+  const getStatusBadge = (status: RegisteredUser["status"], user?: RegisteredUser) => {
     switch (status) {
       case "pending":
         return (
@@ -736,10 +791,17 @@ export default function ApproveDetailPage() {
         )
       case "admin_approved":
         return (
-          <Badge variant="outline" className="text-blue-600 border-blue-600">
-            <UserCheckIcon className="mr-1 h-3 w-3" />
-            Admin Approved
-          </Badge>
+          <div className="flex flex-col gap-1">
+            <Badge variant="outline" className="text-blue-600 border-blue-600">
+              <UserCheckIcon className="mr-1 h-3 w-3" />
+              Admin Approved
+            </Badge>
+            {user?.multiSignAppID && (
+              <span className="text-xs text-muted-foreground">
+                Master yet to approve ({user.multisigBoxCount || 0}/2 signatures)
+              </span>
+            )}
+          </div>
         )
       case "mentor_approved":
         return (
@@ -750,10 +812,15 @@ export default function ApproveDetailPage() {
         )
       case "fully_approved":
         return (
-          <Badge variant="default" className="bg-green-600">
-            <CheckCircleIcon className="mr-1 h-3 w-3" />
-            Fully Approved
-          </Badge>
+          <div className="flex flex-col gap-1">
+            <Badge variant="default" className="bg-green-600">
+              <CheckCircleIcon className="mr-1 h-3 w-3" />
+              Fully Approved
+            </Badge>
+            {user?.multiSignAppID && (
+              <span className="text-xs text-green-600">All signatures complete ({user.multisigBoxCount || 0}/2)</span>
+            )}
+          </div>
         )
       case "rejected":
         return (
@@ -977,6 +1044,9 @@ export default function ApproveDetailPage() {
                       MultiSign App ID
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      Signatures
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                       Actions
                     </th>
                   </tr>
@@ -997,9 +1067,19 @@ export default function ApproveDetailPage() {
                       <td className="px-4 py-3 whitespace-normal text-sm text-muted-foreground break-all max-w-xs">
                         {user.description}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap">{getStatusBadge(user.status)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{getStatusBadge(user.status, user)}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-muted-foreground">
                         {user.multiSignAppID || "Not assigned"}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-center">
+                        {user.multiSignAppID > 0 ? (
+                          <div className="flex flex-col items-center">
+                            <span className="font-semibold">{user.multisigBoxCount || 0}/2</span>
+                            <span className="text-xs text-muted-foreground">signatures</span>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
                         <div className="flex flex-col gap-2">

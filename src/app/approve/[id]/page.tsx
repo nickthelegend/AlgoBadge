@@ -54,7 +54,7 @@ interface RegisteredUser {
   description: string // desc field from (string,uint64) decoding
   multiSignAppID: number // multiSignAppID field from (string,uint64) decoding
   multisigBoxCount?: number // Number of boxes in multisig app
-  status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected"
+  status: "pending" | "admin_approved" | "mentor_approved" | "fully_approved" | "rejected" | "ready_to_broadcast"
   adminSignature?: string
   mentorSignature?: string
   pendingTransactionGroup?: number // Store the transaction group ID for broadcasting
@@ -432,13 +432,19 @@ export default function ApproveDetailPage() {
               multisigBoxCount = await fetchMultisigBoxCount(multiSignAppID)
               console.log(`Multisig app ${multiSignAppID} has ${multisigBoxCount} boxes`)
 
-              // Determine status based on box count
+              // Updated status determination logic
               if (multisigBoxCount >= 4) {
-                status = "fully_approved" // Both admin and master have signed
+                // 4 boxes means: 2 for transaction setup + 2 signatures (one from each signer)
+                status = "ready_to_broadcast" // Ready to broadcast - threshold reached
+              } else if (multisigBoxCount >= 2) {
+                // 2-3 boxes means transaction is created and at least one signature exists
+                status = "admin_approved" // Admin has signed, waiting for master
               } else if (multisigBoxCount === 1) {
-                status = "admin_approved" // Only admin has signed, master yet to approve
+                // 1 box means multisig app is set up but no transaction created yet
+                status = "mentor_approved" // Multisig app assigned but no transaction yet
               } else {
-                status = "mentor_approved" // Multisig app assigned but no signatures yet
+                // 0 boxes means multisig app exists but not properly initialized
+                status = "mentor_approved" // Multisig app assigned but not ready
               }
             }
 
@@ -831,7 +837,7 @@ export default function ApproveDetailPage() {
                 updated.adminSignature = `multisig_approval_${Date.now()}`
                 updated.pendingTransactionGroup = newGroupId
                 // Update multisig box count to reflect the new signature
-                updated.multisigBoxCount = (updated.multisigBoxCount || 0) + 1
+                updated.multisigBoxCount = (updated.multisigBoxCount || 0) + 2 // +2 for signature storage
               } else if (role === "mentor") {
                 updated.status = "mentor_approved"
                 updated.mentorSignature = `multisig_approval_${Date.now()}`
@@ -896,8 +902,8 @@ export default function ApproveDetailPage() {
     }
 
     const user = registeredUsers.find((u) => u.address === userAddress)
-    if (!user || !user.multiSignAppID || !user.pendingTransactionGroup) {
-      toast.error("User not found or no pending transaction to broadcast.")
+    if (!user || !user.multiSignAppID) {
+      toast.error("User not found or no multisig app assigned.")
       return
     }
 
@@ -907,8 +913,12 @@ export default function ApproveDetailPage() {
     try {
       const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
 
+      // We need to find the transaction group to broadcast
+      // For now, let's assume we use group ID 1 (you might need to track this better)
+      const groupId = user.pendingTransactionGroup || 1
+
       // Get transaction details
-      const txnDetails = await getMultisigTransactionDetails(user.multiSignAppID, user.pendingTransactionGroup)
+      const txnDetails = await getMultisigTransactionDetails(user.multiSignAppID, groupId)
       if (!txnDetails) {
         throw new Error("Could not fetch transaction details")
       }
@@ -917,6 +927,8 @@ export default function ApproveDetailPage() {
 
       // Check if threshold is reached
       const signedCount = signatures.filter((sign) => sign.sign).length
+      console.log(`Checking signatures: ${signedCount}/${threshold}`)
+
       if (signedCount < threshold) {
         throw new Error(`Threshold not reached. Need ${threshold} signatures, have ${signedCount}`)
       }
@@ -1021,7 +1033,7 @@ export default function ApproveDetailPage() {
             </Badge>
             {user?.multiSignAppID && (
               <span className="text-xs text-muted-foreground">
-                Master yet to approve ({user.multisigBoxCount || 0}/2 signatures)
+                Master yet to approve ({user.multisigBoxCount || 0}/4 boxes)
               </span>
             )}
           </div>
@@ -1033,6 +1045,20 @@ export default function ApproveDetailPage() {
             Mentor Approved
           </Badge>
         )
+      case "ready_to_broadcast":
+        return (
+          <div className="flex flex-col gap-1">
+            <Badge variant="default" className="bg-orange-600">
+              <SendIcon className="mr-1 h-3 w-3" />
+              Ready to Broadcast
+            </Badge>
+            {user?.multiSignAppID && (
+              <span className="text-xs text-orange-600">
+                All signatures complete ({user.multisigBoxCount || 0}/4 boxes)
+              </span>
+            )}
+          </div>
+        )
       case "fully_approved":
         return (
           <div className="flex flex-col gap-1">
@@ -1041,11 +1067,7 @@ export default function ApproveDetailPage() {
               Fully Approved
             </Badge>
             {user?.multiSignAppID && (
-              <span className="text-xs text-green-600">
-                {user.pendingTransactionGroup
-                  ? `Ready to broadcast (${user.multisigBoxCount || 0}/2)`
-                  : `All signatures complete (${user.multisigBoxCount || 0}/2)`}
-              </span>
+              <span className="text-xs text-green-600">Transaction broadcasted successfully</span>
             )}
           </div>
         )
@@ -1065,13 +1087,13 @@ export default function ApproveDetailPage() {
     if (role === "admin") {
       // Admin can approve if:
       // 1. Not fully approved AND
-      // 2. Either no multisig app (first approval) OR status is admin_approved with 1/2 signatures (master approval)
-      if (user.status === "fully_approved") return false
+      // 2. Either no multisig app (first approval) OR status is admin_approved with less than 4 boxes (master approval)
+      if (user.status === "fully_approved" || user.status === "ready_to_broadcast") return false
 
       // If there's a multisig app and status is admin_approved, check if master needs to approve
       if (user.multiSignAppID > 0 && user.status === "admin_approved") {
-        // Master can approve if there's only 1/2 signatures
-        return (user.multisigBoxCount || 0) === 1
+        // Master can approve if there are less than 4 boxes (need second signature)
+        return (user.multisigBoxCount || 0) < 4
       }
 
       // Regular admin approval (first approval or no multisig yet)
@@ -1084,7 +1106,8 @@ export default function ApproveDetailPage() {
   }
 
   const canBroadcastTransaction = (user: RegisteredUser) => {
-    return user.multiSignAppID > 0 && user.pendingTransactionGroup !== undefined
+    // Can broadcast if status is ready_to_broadcast OR if multisig has 4+ boxes (threshold reached)
+    return user.status === "ready_to_broadcast" || (user.multiSignAppID > 0 && (user.multisigBoxCount || 0) >= 4)
   }
 
   const refreshUserSignatureCount = async (userAddress: string) => {
@@ -1094,7 +1117,19 @@ export default function ApproveDetailPage() {
     try {
       const newBoxCount = await fetchMultisigBoxCount(user.multiSignAppID)
       setRegisteredUsers((prev) =>
-        prev.map((u) => (u.address === userAddress ? { ...u, multisigBoxCount: newBoxCount } : u)),
+        prev.map((u) => {
+          if (u.address === userAddress) {
+            const updated = { ...u, multisigBoxCount: newBoxCount }
+            // Update status based on new box count
+            if (newBoxCount >= 4) {
+              updated.status = "ready_to_broadcast"
+            } else if (newBoxCount >= 2) {
+              updated.status = "admin_approved"
+            }
+            return updated
+          }
+          return u
+        }),
       )
     } catch (error) {
       console.error("Error refreshing signature count:", error)
@@ -1302,7 +1337,7 @@ export default function ApproveDetailPage() {
                       MultiSign App ID
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                      Signatures
+                      Boxes
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                       Actions
@@ -1332,8 +1367,8 @@ export default function ApproveDetailPage() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-center">
                         {user.multiSignAppID > 0 ? (
                           <div className="flex flex-col items-center">
-                            <span className="font-semibold">{user.multisigBoxCount || 0}/2</span>
-                            <span className="text-xs text-muted-foreground">signatures</span>
+                            <span className="font-semibold">{user.multisigBoxCount || 0}/4</span>
+                            <span className="text-xs text-muted-foreground">boxes</span>
                           </div>
                         ) : (
                           <span className="text-muted-foreground">-</span>

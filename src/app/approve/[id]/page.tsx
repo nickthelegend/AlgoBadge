@@ -30,6 +30,7 @@ import { toast } from "react-toastify"
 import { AlgorandClient } from "@algorandfoundation/algokit-utils"
 import { AlgoAmount } from "@algorandfoundation/algokit-utils/types/amount"
 import { BadgeContractClient } from "@/contracts/BadgeContractClient"
+import { getMnemonicForAddress, MULTISIG_CONFIG, getUserRole } from "@/lib/constants"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
@@ -39,21 +40,6 @@ const INDEXER_PORT = ""
 const INDEXER_TOKEN = ""
 const ALGOD_PORT = ""
 const ALGOD_TOKEN = ""
-
-const ADMIN_ADDRESSES = [
-  "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4", // Your admin address
-  "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q", // Additional admin address
-  // Add more admin addresses as needed
-]
-
-const MENTOR_ADDRESSES = [
-  "MENTOR_ADDRESS_1_HERE", // Replace with actual mentor address
-  "MENTOR_ADDRESS_2_HERE", // Replace with actual mentor address
-]
-
-// Multisig configuration
-const MASTER_ADDRESS = "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q"
-const ADMIN_ADDRESS = "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4"
 
 interface BadgeDetails {
   id: string
@@ -217,8 +203,6 @@ export default function ApproveDetailPage() {
   useEffect(() => {
     console.log("=== AUTHORIZATION CHECK ===")
     console.log("Active Address:", activeAddress)
-    console.log("Admin Addresses:", ADMIN_ADDRESSES)
-    console.log("Mentor Addresses:", MENTOR_ADDRESSES)
 
     if (!activeAddress) {
       console.log("No active address, setting role to null")
@@ -226,24 +210,9 @@ export default function ApproveDetailPage() {
       return
     }
 
-    console.log("Checking if address is in admin list...")
-    const isAdmin = ADMIN_ADDRESSES.includes(activeAddress)
-    console.log("Is Admin:", isAdmin)
-
-    console.log("Checking if address is in mentor list...")
-    const isMentor = MENTOR_ADDRESSES.includes(activeAddress)
-    console.log("Is Mentor:", isMentor)
-
-    if (isAdmin) {
-      console.log("Setting role to admin")
-      setUserRole("admin")
-    } else if (isMentor) {
-      console.log("Setting role to mentor")
-      setUserRole("mentor")
-    } else {
-      console.log("Setting role to unauthorized")
-      setUserRole("unauthorized")
-    }
+    const role = getUserRole(activeAddress)
+    console.log("User role determined:", role)
+    setUserRole(role)
 
     console.log("=== END AUTHORIZATION CHECK ===")
   }, [activeAddress])
@@ -464,7 +433,7 @@ export default function ApproveDetailPage() {
               console.log(`Multisig app ${multiSignAppID} has ${multisigBoxCount} boxes`)
 
               // Determine status based on box count
-              if (multisigBoxCount >= 2) {
+              if (multisigBoxCount >= 4) {
                 status = "fully_approved" // Both admin and master have signed
               } else if (multisigBoxCount === 1) {
                 status = "admin_approved" // Only admin has signed, master yet to approve
@@ -538,8 +507,8 @@ export default function ApproveDetailPage() {
       const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
 
       // Configuration for multisig
-      const addresses = [MASTER_ADDRESS, ADMIN_ADDRESS]
-      const signaturesRequired = 2
+      const addresses = [MULTISIG_CONFIG.MASTER_ADDRESS, MULTISIG_CONFIG.ADMIN_ADDRESS]
+      const signaturesRequired = MULTISIG_CONFIG.THRESHOLD
 
       // Generate the multisig address
       const msig_addr = algosdk.multisigAddress({
@@ -678,7 +647,7 @@ export default function ApproveDetailPage() {
   }
 
   const handleApprove = async (userAddress: string, role: "admin" | "mentor") => {
-    if (!activeAccount || !transactionSigner) {
+    if (!activeAccount || !transactionSigner || !activeAddress) {
       toast.error("Please connect your wallet first.")
       return
     }
@@ -711,7 +680,7 @@ export default function ApproveDetailPage() {
         const global = await appClient.getGlobalState()
 
         let threshold = 2
-        const addresses: string[] = [MASTER_ADDRESS, ADMIN_ADDRESS]
+        const addresses: string[] = [MULTISIG_CONFIG.MASTER_ADDRESS, MULTISIG_CONFIG.ADMIN_ADDRESS]
 
         if (global.arc55_threshold) {
           threshold = global.arc55_threshold.asNumber()
@@ -800,8 +769,55 @@ export default function ApproveDetailPage() {
         const res = await final_txn.execute()
         console.log(`Approval Transaction Created: ${res.txIds[1]}\ngroup: ${newGroupId}`)
 
+        // Now set the signature for the transaction
+        toast.update("approving", { render: "Setting signature..." })
+
+        // Get the current user's account using the hardcoded mnemonic
+        let currentUserAccount: algosdk.Account
+        try {
+          const mnemonic = getMnemonicForAddress(activeAddress)
+          currentUserAccount = algosdk.mnemonicToSecretKey(mnemonic)
+          console.log("Successfully retrieved account for address:", activeAddress)
+        } catch (mnemonicError: any) {
+          throw new Error(`Failed to get mnemonic for address ${activeAddress}: ${mnemonicError.message}`)
+        }
+
+        // Sign the transaction
+        const sign = new Uint8Array(approvalTxn.rawSignTxn(currentUserAccount.sk))
+        console.log("Generated signature length:", sign.length)
+
+        // Calculate signature storage cost
+        const sigSize = 2500 + 400 * (40 + 2 + sign.length)
+        const set_sig_mbr = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: activeAccount.address,
+          receiver: appReference.appAddress,
+          amount: sigSize,
+          suggestedParams: await algodClient.getTransactionParams().do(),
+        })
+
+        // Create boxes for signature storage
+        const sigBoxes = Array.from({ length: 8 }, () => ({
+          appIndex: 0,
+          name: combineAddressAndUint64(activeAddress, newGroupId),
+        }))
+
+        // Set the signature
+        const set_sig = await appClient.arc55SetSignatures(
+          {
+            costs: set_sig_mbr,
+            transactionGroup: newGroupId,
+            signatures: [sign],
+          },
+          {
+            sender: { addr: activeAccount.address, signer: transactionSigner },
+            boxes: sigBoxes,
+          },
+        )
+
+        console.log(`Signature set with transaction ID: ${set_sig.transaction.txID()}`)
+
         toast.update("approving", {
-          render: `Multisig approval transaction created! Group: ${newGroupId}`,
+          render: `Multisig approval and signature set! Group: ${newGroupId}`,
           type: "success",
           autoClose: 5000,
         })
@@ -827,7 +843,9 @@ export default function ApproveDetailPage() {
           }),
         )
 
-        console.log(`${role} created multisig approval for user ${userAddress} in group ${newGroupId}`)
+        console.log(
+          `${role} created multisig approval and set signature for user ${userAddress} in group ${newGroupId}`,
+        )
       } catch (error: any) {
         console.error("Error creating multisig approval:", error)
         toast.update("approving", {

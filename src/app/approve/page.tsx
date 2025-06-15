@@ -20,23 +20,13 @@ import {
   EyeIcon,
   ExternalLinkIcon,
 } from "lucide-react"
+import { getUserRole } from "@/lib/constants"
 
 // Configuration
 const BADGE_MANAGER_APP_ID = 741171409 // Your Badge Manager App ID
 const INDEXER_SERVER = "https://testnet-idx.algonode.cloud"
 const INDEXER_PORT = ""
 const INDEXER_TOKEN = ""
-
-const ADMIN_ADDRESSES = [
-  "LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4", // Your admin address
-  "DWZX2YSNBJFZS7P53TCW37MOZ4O2YOJTK75HMIBOBVBAILY4EZIF4DKC6Q", // Additional admin address
-  // Add more admin addresses as needed
-]
-
-const MENTOR_ADDRESSES = [
-  "MENTOR_ADDRESS_1_HERE", // Replace with actual mentor address
-  "MENTOR_ADDRESS_2_HERE", // Replace with actual mentor address
-]
 
 interface BadgeInfo {
   id: string // Badge App ID
@@ -56,8 +46,6 @@ export default function ApprovePage() {
   useEffect(() => {
     console.log("=== MAIN APPROVE AUTHORIZATION CHECK ===")
     console.log("Active Address:", activeAddress)
-    console.log("Admin Addresses:", ADMIN_ADDRESSES)
-    console.log("Mentor Addresses:", MENTOR_ADDRESSES)
 
     if (!activeAddress) {
       console.log("No active address, setting role to null")
@@ -65,24 +53,9 @@ export default function ApprovePage() {
       return
     }
 
-    console.log("Checking if address is in admin list...")
-    const isAdmin = ADMIN_ADDRESSES.includes(activeAddress)
-    console.log("Is Admin:", isAdmin)
-
-    console.log("Checking if address is in mentor list...")
-    const isMentor = MENTOR_ADDRESSES.includes(activeAddress)
-    console.log("Is Mentor:", isMentor)
-
-    if (isAdmin) {
-      console.log("Setting role to admin")
-      setUserRole("admin")
-    } else if (isMentor) {
-      console.log("Setting role to mentor")
-      setUserRole("mentor")
-    } else {
-      console.log("Setting role to unauthorized")
-      setUserRole("unauthorized")
-    }
+    const role = getUserRole(activeAddress)
+    console.log("User role determined:", role)
+    setUserRole(role)
 
     console.log("=== END MAIN APPROVE AUTHORIZATION CHECK ===")
   }, [activeAddress])
